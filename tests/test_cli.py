@@ -45,7 +45,10 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path]:
 def test_report_command_writes_html(tmp_path: Path) -> None:
     cfg, output = _make_project(tmp_path)
     runner = CliRunner()
-    result = runner.invoke(cli, ["report", "--config", str(cfg), "--output", str(output)])
+    result = runner.invoke(
+        cli,
+        ["report", "--config", str(cfg), "--output", str(output), "--no-open"],
+    )
     assert result.exit_code == 0, result.output
     assert output.exists()
     html = output.read_text(encoding="utf-8")

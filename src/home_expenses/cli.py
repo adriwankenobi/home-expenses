@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import webbrowser
 from datetime import date
 from pathlib import Path
 
@@ -34,10 +35,18 @@ def cli() -> None:
     default=Path("report.html"),
 )
 @click.option("--exit-on-alerts", is_flag=True, default=False)
+@click.option(
+    "--no-open",
+    "no_open",
+    is_flag=True,
+    default=False,
+    help="Skip opening the report in the default browser after generation.",
+)
 def report(
     config_path: Path,
     output_path: Path,
     exit_on_alerts: bool,
+    no_open: bool,
 ) -> None:
     """Build report.html from bank statements and invoice PDFs."""
     try:
@@ -71,6 +80,9 @@ def report(
             click.echo(f"  - {path}", err=True)
     click.echo(f"Matched {summary.items} items. {summary.alerts} alerts.")
     click.echo(f"→ {summary.output_path}")
+
+    if not no_open:
+        webbrowser.open(summary.output_path.resolve().as_uri())
 
     if exit_on_alerts and summary.alerts > 0:
         sys.exit(3)
