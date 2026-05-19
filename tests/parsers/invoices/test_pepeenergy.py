@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from home_expenses.parsers.invoices import get_parser
+from home_expenses.parsers.invoices import get_parser, get_spec
 from home_expenses.parsers.invoices.pepeenergy import (
     InvoiceParseError,
+    matches_filename,
     parse_text,
 )
 
@@ -109,3 +110,19 @@ def test_unrecognized_period_format_raises() -> None:
     )
     with pytest.raises(InvoiceParseError, match="unrecognized period"):
         parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
+
+
+def test_matches_filename_accepts_e_prefix() -> None:
+    assert matches_filename(Path("E24PP0000258154.pdf")) is True
+
+
+def test_matches_filename_rejects_non_e_prefix() -> None:
+    assert matches_filename(Path("contrato_luz_512356.pdf")) is False
+    assert matches_filename(Path("factura.pdf")) is False
+
+
+def test_spec_exposes_parse_and_matches() -> None:
+    spec = get_spec("pepeenergy")
+    assert callable(spec.parse)
+    assert callable(spec.matches_filename)
+    assert spec.matches_filename(Path("Eanything.pdf")) is True

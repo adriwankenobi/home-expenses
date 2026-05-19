@@ -15,6 +15,12 @@ from home_expenses.models import Invoice, InvoicePeriod
 
 PARSER_NAME = "pepeenergy"
 
+
+def matches_filename(path: Path) -> bool:
+    """Return True if the file name follows PepeEnergy's invoice convention."""
+    return path.name.startswith("E")
+
+
 _SPANISH_MONTHS: dict[str, int] = {
     "enero": 1,
     "febrero": 2,

@@ -12,7 +12,8 @@ from home_expenses.config import Config
 from home_expenses.matcher import match
 from home_expenses.models import Alert, BankStatementFile, Invoice
 from home_expenses.parsers.bank_statement import parse_bank_statement
-from home_expenses.parsers.invoices import get_parser
+from home_expenses.parsers.invoices import get_spec
+from home_expenses.parsers.invoices.pepeenergy import InvoiceParseError
 from home_expenses.preflight import check_statement_overlaps
 from home_expenses.recurrence import check_recurrence
 from home_expenses.report.model import build_report_model
@@ -25,6 +26,7 @@ class RunSummary:
     statements_from_cache: int
     invoices_loaded: int
     invoices_from_cache: int
+    skipped_files: tuple[str, ...]
     items: int
     alerts: int
     output_path: Path
@@ -36,7 +38,7 @@ def run_report(config: Config, output_path: Path, today: date) -> RunSummary:
     statements, cached_stmt_count = _load_statements(config, cache)
     check_statement_overlaps(statements)
 
-    invoices_by_cat, cached_inv_count = _load_invoices(config, cache)
+    invoices_by_cat, cached_inv_count, skipped = _load_invoices(config, cache)
 
     transactions = tuple(t for s in statements for t in s.transactions)
     result = match(transactions, invoices_by_cat, config)
@@ -71,6 +73,7 @@ def run_report(config: Config, output_path: Path, today: date) -> RunSummary:
         statements_from_cache=cached_stmt_count,
         invoices_loaded=total_invoices,
         invoices_from_cache=cached_inv_count,
+        skipped_files=tuple(skipped),
         items=len(model.items),
         alerts=len(model.alerts),
         output_path=output_path,
@@ -94,25 +97,34 @@ def _load_statements(config: Config, cache: ExtractionCache) -> tuple[list[BankS
     return loaded, from_cache
 
 
-def _load_invoices(config: Config, cache: ExtractionCache) -> tuple[dict[str, list[Invoice]], int]:
+def _load_invoices(
+    config: Config, cache: ExtractionCache
+) -> tuple[dict[str, list[Invoice]], int, list[str]]:
     by_cat: dict[str, list[Invoice]] = {}
     from_cache = 0
+    skipped: list[str] = []
     for name, cat in config.categories.items():
         if cat.invoice_folder is None or cat.invoice_parser is None:
             continue
-        parser = get_parser(cat.invoice_parser)
+        spec = get_spec(cat.invoice_parser)
         by_cat[name] = []
         for f in sorted(cat.invoice_folder.glob("*.pdf")):
+            if not spec.matches_filename(f):
+                skipped.append(str(f))
+                continue
             h = file_sha256(f)
             hit = cache.get_invoice(h)
             if hit is not None:
                 by_cat[name].append(hit)
                 from_cache += 1
             else:
-                inv = parser(f)
+                try:
+                    inv = spec.parse(f)
+                except InvoiceParseError as e:
+                    raise InvoiceParseError(f"{f}: {e}") from e
                 cache.put_invoice(inv)
                 by_cat[name].append(inv)
-    return by_cat, from_cache
+    return by_cat, from_cache, skipped
 
 
 def _union_range(

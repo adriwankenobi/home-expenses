@@ -61,6 +61,14 @@ def report(
         f"({summary.invoices_from_cache} cached, "
         f"{summary.invoices_loaded - summary.invoices_from_cache} new)."
     )
+    if summary.skipped_files:
+        click.echo(
+            f"Skipped {len(summary.skipped_files)} file(s) not matching the parser's "
+            f"filename convention:",
+            err=True,
+        )
+        for path in summary.skipped_files:
+            click.echo(f"  - {path}", err=True)
     click.echo(f"Matched {summary.items} items. {summary.alerts} alerts.")
     click.echo(f"→ {summary.output_path}")
 

@@ -3,19 +3,37 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from home_expenses.models import Invoice
 from home_expenses.parsers.invoices import pepeenergy
 
 ParseFn = Callable[[Path], Invoice]
+MatchesFn = Callable[[Path], bool]
 
-_REGISTRY: dict[str, ParseFn] = {
-    pepeenergy.PARSER_NAME: pepeenergy.parse,
+
+@dataclass(frozen=True)
+class ParserSpec:
+    parse: ParseFn
+    matches_filename: MatchesFn
+
+
+_REGISTRY: dict[str, ParserSpec] = {
+    pepeenergy.PARSER_NAME: ParserSpec(
+        parse=pepeenergy.parse,
+        matches_filename=pepeenergy.matches_filename,
+    ),
 }
 
 
 def get_parser(name: str) -> ParseFn:
+    if name not in _REGISTRY:
+        raise KeyError(f"unknown invoice parser: {name!r}")
+    return _REGISTRY[name].parse
+
+
+def get_spec(name: str) -> ParserSpec:
     if name not in _REGISTRY:
         raise KeyError(f"unknown invoice parser: {name!r}")
     return _REGISTRY[name]
