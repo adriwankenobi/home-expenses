@@ -19,23 +19,29 @@ def _load_template() -> str:
     return TEMPLATE.read_text(encoding="utf-8")
 
 
+def _parseable_template() -> str:
+    """Return the template with the date placeholder substituted to a real date."""
+    return _load_template().replace("DD/MM/YY", "15/07/24")
+
+
 def test_extracts_amount_above_total_a_pagar_label() -> None:
-    inv = parse_text(_load_template(), source_path="/tmp/x.pdf", content_hash="h")
+    inv = parse_text(_parseable_template(), source_path="/tmp/x.pdf", content_hash="h")
     assert inv.amount == Decimal("1.11")
 
 
 def test_extracts_invoice_id_from_line_after_label() -> None:
-    inv = parse_text(_load_template(), source_path="/tmp/x.pdf", content_hash="h")
+    inv = parse_text(_parseable_template(), source_path="/tmp/x.pdf", content_hash="h")
     assert inv.invoice_id == "XXXXXXXXXXXX"
 
 
 def test_extracts_invoice_date_from_fecha_emision() -> None:
-    inv = parse_text(_load_template(), source_path="/tmp/x.pdf", content_hash="h")
+    text = _load_template().replace("DD/MM/YY", "15/07/24")
+    inv = parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
     assert inv.invoice_date == date(2024, 7, 15)
 
 
 def test_extracts_month_year_period() -> None:
-    inv = parse_text(_load_template(), source_path="/tmp/x.pdf", content_hash="h")
+    inv = parse_text(_parseable_template(), source_path="/tmp/x.pdf", content_hash="h")
     assert inv.period.start == date(2024, 5, 1)
     assert inv.period.end == date(2024, 5, 31)
 
