@@ -17,6 +17,12 @@ class ConfigError(ValueError):
     """Raised when config.json is structurally invalid."""
 
 
+def _require_dict(value: Any, label: str, path: Path) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ConfigError(f"{path}: {label} must be an object")
+    return value
+
+
 @dataclass(frozen=True)
 class Category:
     name: str
@@ -59,7 +65,7 @@ def load_config(path: Path) -> Config:
         if required not in raw:
             raise ConfigError(f"{path}: missing required field '{required}'")
 
-    bs_raw: dict[str, Any] = raw["bank_statements"]
+    bs_raw: dict[str, Any] = _require_dict(raw["bank_statements"], "bank_statements", path)
     if "dir" not in bs_raw or "glob" not in bs_raw:
         raise ConfigError(f"{path}: bank_statements.dir and .glob are required")
     bs_dir = Path(bs_raw["dir"])
@@ -71,7 +77,8 @@ def load_config(path: Path) -> Config:
 
     categories: dict[str, Category] = {}
     pattern_owners: dict[str, str] = {}
-    for name, c in raw["categories"].items():
+    for name, c in _require_dict(raw["categories"], "categories", path).items():
+        _require_dict(c, f"category '{name}'", path)
         if "recurrence" not in c:
             raise ConfigError(f"{path}: category '{name}' missing 'recurrence'")
         if c["recurrence"] not in _VALID_RECURRENCES:
@@ -107,7 +114,9 @@ def load_config(path: Path) -> Config:
             match_window_days=c.get("match_window_days"),
         )
 
-    manual_mappings: dict[str, str] = dict(raw["manual_mappings"])
+    manual_mappings: dict[str, str] = dict(
+        _require_dict(raw["manual_mappings"], "manual_mappings", path)
+    )
     for desc in manual_mappings:
         if desc in pattern_owners:
             raise ConfigError(

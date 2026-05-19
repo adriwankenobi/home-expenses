@@ -114,3 +114,35 @@ def test_cache_dir_defaults_to_sibling_of_config(tmp_path: Path) -> None:
     p = _write_config(tmp_path, _valid_payload(tmp_path))
     cfg = load_config(p)
     assert cfg.cache_dir == tmp_path / "cache"
+
+
+def test_bank_statements_must_be_object(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["bank_statements"] = "oops"
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="bank_statements must be an object"):
+        load_config(p)
+
+
+def test_categories_must_be_object(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"] = []
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="categories must be an object"):
+        load_config(p)
+
+
+def test_category_entry_must_be_object(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["broken"] = "not a dict"
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="category 'broken' must be an object"):
+        load_config(p)
+
+
+def test_manual_mappings_must_be_object(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = []
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="manual_mappings must be an object"):
+        load_config(p)
