@@ -55,13 +55,24 @@ def parse_bank_statement(path: Path) -> BankStatementFile:
     idx_amount = header.index("Importe")
 
     transactions: list[Transaction] = []
-    for row in reader:
+    max_idx = max(idx_date, idx_desc, idx_amount)
+    for row_num, row in enumerate(reader, start=2):
         if not row or all(c == "" for c in row):
             continue
-        amount = _parse_amount(row[idx_amount])
+        if len(row) <= max_idx:
+            raise BankStatementParseError(
+                f"{path}:{row_num}: row has fewer columns than the header"
+            )
+        try:
+            amount = _parse_amount(row[idx_amount])
+        except BankStatementParseError as e:
+            raise BankStatementParseError(f"{path}:{row_num}: {e}") from e
         if amount >= 0:
             continue
-        txn_date = _parse_date(row[idx_date])
+        try:
+            txn_date = _parse_date(row[idx_date])
+        except BankStatementParseError as e:
+            raise BankStatementParseError(f"{path}:{row_num}: {e}") from e
         description = row[idx_desc].strip()
         transactions.append(Transaction(date=txn_date, description=description, amount=-amount))
 

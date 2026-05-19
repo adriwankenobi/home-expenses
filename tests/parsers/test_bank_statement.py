@@ -61,3 +61,24 @@ def test_invalid_date_in_row_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(BankStatementParseError, match="date"):
         parse_bank_statement(bad)
+
+
+def test_invalid_amount_in_row_raises(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.csv"
+    bad.write_text(
+        '"";"F. ejecución";"F. valor";"Concepto";"Importe";"Saldo"\n'
+        '"";"18/05/2026";"18/05/2026";"X";"N/A";"0"\n',
+        encoding="cp1252",
+    )
+    with pytest.raises(BankStatementParseError, match="invalid amount"):
+        parse_bank_statement(bad)
+
+
+def test_short_row_raises(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.csv"
+    bad.write_text(
+        '"";"F. ejecución";"F. valor";"Concepto";"Importe";"Saldo"\n"";"18/05/2026"\n',
+        encoding="cp1252",
+    )
+    with pytest.raises(BankStatementParseError, match="fewer columns"):
+        parse_bank_statement(bad)
