@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from home_expenses.parsers.invoices import get_parser
+from home_expenses.parsers.invoices.pepeenergy import (
+    InvoiceParseError,
+    parse_text,
+)
+
+TEMPLATE = Path(__file__).resolve().parents[3] / "templates" / "pepeenergy.txt"
+
+
+def _load_template() -> str:
+    return TEMPLATE.read_text(encoding="utf-8")
+
+
+def test_extracts_amount_above_total_a_pagar_label() -> None:
+    inv = parse_text(_load_template(), source_path="/tmp/x.pdf", content_hash="h")
+    assert inv.amount == Decimal("1.11")
+
+
+def test_extracts_invoice_id_from_line_after_label() -> None:
+    inv = parse_text(_load_template(), source_path="/tmp/x.pdf", content_hash="h")
+    assert inv.invoice_id == "XXXXXXXXXXXX"
+
+
+def test_extracts_invoice_date_from_fecha_emision() -> None:
+    inv = parse_text(_load_template(), source_path="/tmp/x.pdf", content_hash="h")
+    assert inv.invoice_date == date(2024, 7, 15)
+
+
+def test_extracts_month_year_period() -> None:
+    inv = parse_text(_load_template(), source_path="/tmp/x.pdf", content_hash="h")
+    assert inv.period.start == date(2024, 5, 1)
+    assert inv.period.end == date(2024, 5, 31)
+
+
+def test_extracts_day_range_period() -> None:
+    text = (
+        "Factura de la luz de Juan Ejemplo\n"
+        "16 al 30 de abril de 2024 Calle Falsa\n"
+        "Fecha emisión: 02/05/24\n"
+        "Número de factura\n"
+        "ABC123 Resumen\n"
+        "5,00 €\n"
+        "Total a pagar\n"
+    )
+    inv = parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
+    assert inv.period.start == date(2024, 4, 16)
+    assert inv.period.end == date(2024, 4, 30)
+
+
+def test_missing_total_a_pagar_raises() -> None:
+    text = "Fecha emisión: 02/05/24\nNúmero de factura\nABC\n"
+    with pytest.raises(InvoiceParseError, match="Total a pagar"):
+        parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
+
+
+def test_missing_period_raises() -> None:
+    text = "Fecha emisión: 02/05/24\nNúmero de factura\nABC Resumen\n5,00 €\nTotal a pagar\n"
+    with pytest.raises(InvoiceParseError, match="period"):
+        parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
+
+
+def test_registry_resolves_pepeenergy() -> None:
+    parser = get_parser("pepeenergy")
+    assert callable(parser)
+
+
+def test_registry_unknown_parser_raises() -> None:
+    with pytest.raises(KeyError):
+        get_parser("acme")
