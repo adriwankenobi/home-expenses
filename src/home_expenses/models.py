@@ -1,0 +1,87 @@
+"""Plain dataclasses shared across the application."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal
+from enum import StrEnum
+from typing import Any
+
+
+@dataclass(frozen=True)
+class Transaction:
+    """One outgoing line from a bank statement (amount is always positive)."""
+
+    date: date
+    description: str
+    amount: Decimal
+
+
+@dataclass(frozen=True)
+class InvoicePeriod:
+    """The consumption period an invoice covers."""
+
+    start: date
+    end: date
+
+
+@dataclass(frozen=True)
+class Invoice:
+    """One invoice PDF, after parsing."""
+
+    source_path: str
+    content_hash: str
+    parser: str
+    amount: Decimal
+    invoice_id: str
+    invoice_date: date
+    period: InvoicePeriod
+
+
+@dataclass(frozen=True)
+class Item:
+    """A categorized transaction, optionally paired with an invoice."""
+
+    transaction: Transaction
+    category: str
+    invoice: Invoice | None
+
+
+@dataclass(frozen=True)
+class BankStatementFile:
+    """One parsed statement file."""
+
+    source_path: str
+    content_hash: str
+    date_range: tuple[date, date]
+    transactions: tuple[Transaction, ...]
+
+
+class AlertKind(StrEnum):
+    UNCLASSIFIED_EXPENSE = "unclassified_expense"
+    EXPENSE_MISSING_INVOICE = "expense_missing_invoice"
+    ORPHAN_INVOICE = "orphan_invoice"
+    RECURRING_MISSED = "recurring_missed"
+    AMBIGUOUS_INVOICE_MATCH = "ambiguous_invoice_match"
+    AMBIGUOUS_PATTERN_MATCH = "ambiguous_pattern_match"
+
+
+@dataclass(frozen=True)
+class Alert:
+    """One thing to surface in the report's alerts banner."""
+
+    kind: AlertKind
+    message: str
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReportModel:
+    """The fully assembled data the renderer consumes."""
+
+    generated_at: date
+    currency: str
+    items: tuple[Item, ...]
+    alerts: tuple[Alert, ...]
+    years: tuple[int, ...]
