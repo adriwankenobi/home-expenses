@@ -141,7 +141,7 @@
         '<td>' + it.amount + '</td>' +
         '<td>' + escapeHtml(it.category) + '</td>' +
         '<td>' + (it.invoice_path
-          ? '<a href="file://' + it.invoice_path + '" target="_blank">📎</a>'
+          ? '<a href="file://' + escapeHtml(it.invoice_path) + '" target="_blank">📎</a>'
           : '') + '</td>';
       tbody.appendChild(tr);
     });

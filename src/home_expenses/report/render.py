@@ -17,7 +17,7 @@ _TEMPLATE_DIR = Path(__file__).parent / "templates"
 def render_report(model: ReportModel, output_path: Path) -> None:
     env = Environment(
         loader=FileSystemLoader(_TEMPLATE_DIR),
-        autoescape=select_autoescape(["html"]),
+        autoescape=select_autoescape(["html", "j2"]),
     )
     template = env.get_template("report.html.j2")
     html = template.render(
