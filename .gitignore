@@ -1,0 +1,24 @@
+# Real data — never commit
+bank_statements/
+config.json
+
+# Generated
+report.html
+cache/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# uv
+.python-version
+
+# Brainstorming
+.superpowers/
+
+# OS
+.DS_Store
