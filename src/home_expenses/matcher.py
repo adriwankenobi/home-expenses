@@ -161,7 +161,9 @@ def _try_pattern_match(
                     f"transaction matches patterns from multiple categories: {txn.description}"
                 ),
                 payload={
+                    "date": txn.date.isoformat(),
                     "description": txn.description,
+                    "amount": str(txn.amount),
                     "candidate_categories": sorted(set(hits)),
                 },
             )

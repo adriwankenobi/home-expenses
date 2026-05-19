@@ -215,3 +215,5 @@ def test_per_category_window_override() -> None:
     assert len(result.items) == 1
     assert result.items[0].category == "electricity"
     assert result.items[0].invoice is None
+    # The out-of-window invoice is unconsumed and must surface as an orphan.
+    assert any(a.kind is AlertKind.ORPHAN_INVOICE for a in result.alerts)
