@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Home Expenses Report · {{ model.generated_at }}</title>
+<style>
+  body { background: #1a1a1a; color: #ddd; font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 24px; }
+  h1, h2, h3 { color: #fff; }
+  .header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
+  .year-tabs { display: flex; gap: 4px; }
+  .year-tab { padding: 6px 12px; background: #2d2d2d; border: 1px solid #555; border-radius: 4px; font-size: 12px; color: #ccc; cursor: pointer; }
+  .year-tab.active { background: #094771; border-color: #007acc; color: #fff; }
+  .section { margin: 24px 0; padding: 16px; background: #1f1f1f; border-radius: 8px; border: 1px solid #333; }
+  .alert { padding: 8px 12px; background: #3a1e1e; border-left: 4px solid #f48771; margin: 6px 0; border-radius: 4px; }
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .kpi { background: #2d2d2d; padding: 16px; border-radius: 6px; text-align: center; }
+  .kpi .big { font-size: 24px; font-weight: bold; color: #4ec9b0; }
+  .kpi .label { font-size: 11px; color: #aaa; text-transform: uppercase; }
+  .item-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .item-table th, .item-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #333; }
+  .item-table th { color: #888; text-transform: uppercase; font-size: 11px; }
+  .item-table tr.highlighted { background: #094771; }
+  a { color: #4ec9b0; text-decoration: none; }
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Home Expenses · {{ model.generated_at }}</h1>
+  <div class="year-tabs" id="year-tabs">
+    <div class="year-tab active" data-year="all">All</div>
+    {% for y in model.years %}
+    <div class="year-tab" data-year="{{ y }}">{{ y }}</div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="section">
+  <h2>Alerts</h2>
+  {% if model.alerts %}
+    {% for a in model.alerts %}
+      <div class="alert" data-kind="{{ a.kind.value }}">
+        <strong>{{ a.kind.value }}</strong> — {{ a.message }}
+      </div>
+    {% endfor %}
+  {% else %}
+    <p>No alerts. Everything reconciles.</p>
+  {% endif %}
+</div>
+
+<div class="section">
+  <h2>Summary</h2>
+  <div class="kpi-row">
+    <div class="kpi"><div class="big" id="kpi-total">—</div><div class="label">Total ({{ model.currency }})</div></div>
+    <div class="kpi"><div class="big" id="kpi-txns">—</div><div class="label">Transactions</div></div>
+    <div class="kpi"><div class="big" id="kpi-cats">—</div><div class="label">Categories</div></div>
+    <div class="kpi"><div class="big" id="kpi-alerts">{{ model.alerts | length }}</div><div class="label">Open alerts</div></div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Monthly spend</h2>
+  <div id="chart-monthly"></div>
+</div>
+
+<div class="chart-row">
+  <div class="section">
+    <h2>By category</h2>
+    <div id="chart-donut"></div>
+  </div>
+  <div class="section">
+    <h2>Recurring</h2>
+    <div id="recurring-grid">(grid will be populated by JS)</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Timeline</h2>
+  <div id="chart-timeline"></div>
+</div>
+
+<div class="section">
+  <h2>Items</h2>
+  <table class="item-table" id="items">
+    <thead>
+      <tr>
+        <th>Date</th><th>Description</th><th>Amount</th>
+        <th>Category</th><th>Invoice</th>
+      </tr>
+    </thead>
+    <tbody id="items-body">
+      {% for it in model.items %}
+      <tr id="item-{{ loop.index0 }}" data-item-id="{{ loop.index0 }}">
+        <td>{{ it.transaction.date }}</td>
+        <td>{{ it.transaction.description }}</td>
+        <td>{{ it.transaction.amount }}</td>
+        <td>{{ it.category }}</td>
+        <td>{% if it.invoice %}<a href="file://{{ it.invoice.source_path }}" target="_blank">📎</a>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>{{ plotly_js | safe }}</script>
+<script id="model-data" type="application/json">{{ data_json | safe }}</script>
+<script>
+(function () {
+  const data = JSON.parse(document.getElementById('model-data').textContent);
+  let activeYear = 'all';
+
+  function filtered() {
+    if (activeYear === 'all') return data.items;
+    return data.items.filter(it => it.date.startsWith(activeYear + '-'));
+  }
+
+  function render() {
+    const items = filtered();
+    document.getElementById('kpi-total').textContent =
+      items.reduce((s, it) => s + parseFloat(it.amount), 0).toFixed(2);
+    document.getElementById('kpi-txns').textContent = items.length;
+    document.getElementById('kpi-cats').textContent =
+      new Set(items.map(it => it.category)).size;
+    renderItemsTable(items);
+    renderMonthly(items);
+    renderDonut(items);
+    renderTimeline(items);
+  }
+
+  function renderItemsTable(items) {
+    const tbody = document.getElementById('items-body');
+    tbody.innerHTML = '';
+    items.forEach((it, idx) => {
+      const tr = document.createElement('tr');
+      tr.id = 'item-' + idx;
+      tr.dataset.itemId = idx;
+      tr.innerHTML =
+        '<td>' + it.date + '</td>' +
+        '<td>' + escapeHtml(it.description) + '</td>' +
+        '<td>' + it.amount + '</td>' +
+        '<td>' + escapeHtml(it.category) + '</td>' +
+        '<td>' + (it.invoice_path
+          ? '<a href="file://' + it.invoice_path + '" target="_blank">📎</a>'
+          : '') + '</td>';
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderMonthly(items) {
+    const byMonthCat = {};
+    items.forEach(it => {
+      const ym = it.date.slice(0, 7);
+      byMonthCat[ym] = byMonthCat[ym] || {};
+      byMonthCat[ym][it.category] =
+        (byMonthCat[ym][it.category] || 0) + parseFloat(it.amount);
+    });
+    const months = Object.keys(byMonthCat).sort();
+    const cats = Array.from(new Set(items.map(it => it.category)));
+    const traces = cats.map(cat => ({
+      x: months,
+      y: months.map(m => byMonthCat[m][cat] || 0),
+      name: cat,
+      type: 'bar',
+    }));
+    Plotly.newPlot('chart-monthly', traces, { barmode: 'stack', paper_bgcolor: '#1f1f1f', plot_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 } }, { displayModeBar: false });
+  }
+
+  function renderDonut(items) {
+    const byCat = {};
+    items.forEach(it => {
+      byCat[it.category] = (byCat[it.category] || 0) + parseFloat(it.amount);
+    });
+    Plotly.newPlot('chart-donut', [{
+      labels: Object.keys(byCat),
+      values: Object.values(byCat),
+      type: 'pie',
+      hole: 0.5,
+    }], { paper_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 } }, { displayModeBar: false });
+  }
+
+  function renderTimeline(items) {
+    const trace = {
+      x: items.map(it => it.date),
+      y: items.map(it => parseFloat(it.amount)),
+      mode: 'markers',
+      type: 'scatter',
+      text: items.map(it => it.description),
+      customdata: items.map((_, i) => i),
+    };
+    Plotly.newPlot('chart-timeline', [trace], { paper_bgcolor: '#1f1f1f', plot_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 } }, { displayModeBar: false });
+    document.getElementById('chart-timeline').on('plotly_click', evt => {
+      const idx = evt.points[0].customdata;
+      const row = document.getElementById('item-' + idx);
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row.classList.add('highlighted');
+        setTimeout(() => row.classList.remove('highlighted'), 2000);
+      }
+    });
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  document.getElementById('year-tabs').addEventListener('click', e => {
+    if (!e.target.classList.contains('year-tab')) return;
+    document.querySelectorAll('.year-tab').forEach(t => t.classList.remove('active'));
+    e.target.classList.add('active');
+    activeYear = e.target.dataset.year;
+    render();
+  });
+
+  render();
+})();
+</script>
+
+</body>
+</html>
