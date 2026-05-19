@@ -191,7 +191,7 @@ def test_ambiguous_pattern_match_alerts() -> None:
 def test_per_category_window_override() -> None:
     txn = make_transaction(
         date=date(2026, 5, 18),
-        description="X",
+        description="RECIBO ELECTRICITY",
         amount=Decimal("10"),
     )
     # invoice is 20 days before txn; default window 30 would match,
@@ -204,9 +204,14 @@ def test_per_category_window_override() -> None:
                 recurrence="monthly",
                 invoice_folder=Path("/tmp"),
                 invoice_parser="pepeenergy",
+                patterns=("RECIBO ELECTRICITY",),
                 match_window_days=5,
             )
         }
     )
     result = match([txn], {"electricity": [inv]}, cfg)
+    # Transaction is categorized via pattern, but the invoice did not attach
+    # because it falls outside the per-category window override.
+    assert len(result.items) == 1
+    assert result.items[0].category == "electricity"
     assert result.items[0].invoice is None

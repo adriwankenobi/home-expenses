@@ -29,29 +29,22 @@ def match(
 ) -> MatchResult:
     transactions = list(transactions)
     inv_lists: dict[str, list[Invoice]] = {k: list(v) for k, v in invoices_by_category.items()}
-    consumed: set[tuple[str, str]] = set()  # (category, invoice.content_hash)
+    consumed: set[tuple[str, str]] = set()
     items: list[Item] = []
     alerts: list[Alert] = []
     unmatched: list[Transaction] = []
 
     for txn in transactions:
         category_name, invoice = _try_invoice_match(txn, inv_lists, config, alerts)
-        if category_name is not None and invoice is not None:
-            # Exact invoice match within window.
+        if invoice is not None and category_name is not None:
             consumed.add((category_name, invoice.content_hash))
             items.append(Item(transaction=txn, category=category_name, invoice=invoice))
             continue
 
-        # Determine final category via pattern / manual mapping / near-miss.
-        final_cat: str | None = _try_pattern_match(txn, config, alerts)
-        if final_cat is None:
-            # Manual mapping
-            final_cat = config.manual_mappings.get(txn.description)
-        if final_cat is None:
-            # Near-miss: invoice match returned a category but no invoice
-            # (amount matched but invoice outside window, single category).
-            final_cat = category_name
-        if final_cat is None:
+        pattern_cat = _try_pattern_match(txn, config, alerts)
+        if pattern_cat is None:
+            pattern_cat = config.manual_mappings.get(txn.description)
+        if pattern_cat is None:
             alerts.append(
                 Alert(
                     kind=AlertKind.UNCLASSIFIED_EXPENSE,
@@ -66,23 +59,22 @@ def match(
             unmatched.append(txn)
             continue
 
-        items.append(Item(transaction=txn, category=final_cat, invoice=None))
-        cat_def = config.categories.get(final_cat)
+        items.append(Item(transaction=txn, category=pattern_cat, invoice=None))
+        cat_def = config.categories.get(pattern_cat)
         if cat_def is not None and cat_def.invoice_folder is not None:
             alerts.append(
                 Alert(
                     kind=AlertKind.EXPENSE_MISSING_INVOICE,
-                    message=(f"expense in '{final_cat}' has no matched invoice"),
+                    message=f"expense in '{pattern_cat}' has no matched invoice",
                     payload={
                         "date": txn.date.isoformat(),
                         "description": txn.description,
                         "amount": str(txn.amount),
-                        "category": final_cat,
+                        "category": pattern_cat,
                     },
                 )
             )
 
-    # Orphan invoices: any invoice not consumed by an item.
     for cat_name, invs in inv_lists.items():
         for inv in invs:
             if (cat_name, inv.content_hash) not in consumed:
@@ -113,7 +105,6 @@ def _try_invoice_match(
     alerts: list[Alert],
 ) -> tuple[str | None, Invoice | None]:
     candidates: list[tuple[str, Invoice]] = []
-    near_miss_cats: set[str] = set()
     for cat_name, invs in inv_lists.items():
         cat = config.categories.get(cat_name)
         window = (
@@ -127,20 +118,14 @@ def _try_invoice_match(
             delta = (txn.date - inv.invoice_date).days
             if 0 <= delta <= window:
                 candidates.append((cat_name, inv))
-            else:
-                near_miss_cats.add(cat_name)
     if not candidates:
-        # Near-miss: invoice with matching amount exists but outside window.
-        # If exactly one category has such an invoice, categorize without invoice.
-        if len(near_miss_cats) == 1:
-            return next(iter(near_miss_cats)), None
         return None, None
     if len(candidates) == 1:
         return candidates[0]
     alerts.append(
         Alert(
             kind=AlertKind.AMBIGUOUS_INVOICE_MATCH,
-            message=(f"transaction has multiple invoice candidates: {txn.description}"),
+            message=f"transaction has multiple invoice candidates: {txn.description}",
             payload={
                 "date": txn.date.isoformat(),
                 "description": txn.description,
