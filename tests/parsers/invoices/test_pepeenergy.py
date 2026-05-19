@@ -81,3 +81,31 @@ def test_registry_resolves_pepeenergy() -> None:
 def test_registry_unknown_parser_raises() -> None:
     with pytest.raises(KeyError):
         get_parser("acme")
+
+
+def test_extracts_amount_with_thousands_separator() -> None:
+    text = (
+        "Factura de la luz de Juan Ejemplo\n"
+        "mayo 2024 Calle Falsa\n"
+        "Fecha emisión: 02/05/24\n"
+        "Número de factura\n"
+        "ABC123 Resumen\n"
+        "1.234,56 €\n"
+        "Total a pagar\n"
+    )
+    inv = parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
+    assert inv.amount == Decimal("1234.56")
+
+
+def test_unrecognized_period_format_raises() -> None:
+    text = (
+        "Factura de la luz de Juan Ejemplo\n"
+        "garbled period text\n"
+        "Fecha emisión: 02/05/24\n"
+        "Número de factura\n"
+        "ABC Resumen\n"
+        "1,00 €\n"
+        "Total a pagar\n"
+    )
+    with pytest.raises(InvoiceParseError, match="unrecognized period"):
+        parse_text(text, source_path="/tmp/x.pdf", content_hash="h")

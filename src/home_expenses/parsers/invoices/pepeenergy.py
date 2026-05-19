@@ -76,7 +76,7 @@ def _extract_amount(lines: list[str]) -> Decimal:
             m = _AMOUNT_LINE_RE.match(prev)
             if not m:
                 raise InvoiceParseError(f"line above 'Total a pagar' is not an amount: {prev!r}")
-            euros = (m.group(1) + "." + m.group(2)).replace(",", "")
+            euros = m.group(1).replace(".", "") + "." + m.group(2)
             return Decimal(euros)
     raise InvoiceParseError("'Total a pagar' label not found")
 
