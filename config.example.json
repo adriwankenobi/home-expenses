@@ -1,0 +1,42 @@
+{
+  "currency": "EUR",
+  "bank_statements": {
+    "dir": "/Users/you/path/to/bank_statements",
+    "glob": "*.csv"
+  },
+  "match_window_days_default": 30,
+  "categories": {
+    "electricity": {
+      "invoice_folder": "/Users/you/path/to/invoices/pepeenergy",
+      "invoice_parser": "pepeenergy",
+      "recurrence": "monthly",
+      "patterns": ["RECIBO PEPE ENERGY"],
+      "match_window_days": 15
+    },
+    "community_fee": {
+      "patterns": ["RECIBO CCPP LUIS AULA 28"],
+      "recurrence": "monthly"
+    },
+    "taxes": {
+      "patterns": ["RECIBO AYTO"],
+      "recurrence": "yearly"
+    },
+    "water": {
+      "patterns": ["RECIBO ECOCIUDAD ZARAGOZA SAU"],
+      "recurrence": "bimonthly"
+    },
+    "bank_savings": {
+      "patterns": ["LIQUIDACION AHORRO/CTA COR"],
+      "recurrence": "none"
+    },
+    "bank_fees": {
+      "patterns": ["COMISION MANTENIM. CTA."],
+      "recurrence": "yearly"
+    },
+    "phone": {
+      "patterns": ["RECIBO Pepe Mobile, S.L.U."],
+      "recurrence": "monthly"
+    }
+  },
+  "manual_mappings": {}
+}
