@@ -35,7 +35,7 @@ def match(
     unmatched: list[Transaction] = []
 
     for txn in transactions:
-        category_name, invoice = _try_invoice_match(txn, inv_lists, config, alerts)
+        category_name, invoice = _try_invoice_match(txn, inv_lists, config, alerts, consumed)
         if invoice is not None and category_name is not None:
             consumed.add((category_name, invoice.content_hash))
             items.append(Item(transaction=txn, category=category_name, invoice=invoice))
@@ -103,6 +103,7 @@ def _try_invoice_match(
     inv_lists: Mapping[str, list[Invoice]],
     config: Config,
     alerts: list[Alert],
+    consumed: set[tuple[str, str]],
 ) -> tuple[str | None, Invoice | None]:
     candidates: list[tuple[str, Invoice]] = []
     for cat_name, invs in inv_lists.items():
@@ -136,6 +137,8 @@ def _try_invoice_match(
             },
         )
     )
+    for c, i in candidates:
+        consumed.add((c, i.content_hash))
     return None, None
 
 

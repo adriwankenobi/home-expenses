@@ -113,6 +113,8 @@ def test_ambiguous_invoice_match_falls_through_to_pattern() -> None:
     assert any(a.kind is AlertKind.AMBIGUOUS_INVOICE_MATCH for a in result.alerts)
     # also fires missing-invoice because pattern matched but no invoice attached
     assert any(a.kind is AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
+    # Ambiguous candidates remain pending; they MUST NOT be flagged orphan.
+    assert all(a.kind is not AlertKind.ORPHAN_INVOICE for a in result.alerts)
 
 
 def test_pattern_match_no_invoice_folder() -> None:

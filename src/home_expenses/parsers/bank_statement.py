@@ -29,14 +29,14 @@ def _parse_amount(raw: str) -> Decimal:
     try:
         return Decimal(raw)
     except InvalidOperation as e:
-        raise BankStatementParseError(f"invalid amount: {raw!r}") from e
+        raise BankStatementParseError("invalid amount") from e
 
 
 def _parse_date(raw: str) -> date:
     try:
         return datetime.strptime(raw.strip(), "%d/%m/%Y").date()
     except ValueError as e:
-        raise BankStatementParseError(f"invalid date: {raw!r}") from e
+        raise BankStatementParseError("invalid date") from e
 
 
 def parse_bank_statement(path: Path) -> BankStatementFile:

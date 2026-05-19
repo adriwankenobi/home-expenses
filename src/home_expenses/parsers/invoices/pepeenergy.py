@@ -75,7 +75,7 @@ def _extract_amount(lines: list[str]) -> Decimal:
             prev = lines[i - 1].strip()
             m = _AMOUNT_LINE_RE.match(prev)
             if not m:
-                raise InvoiceParseError(f"line above 'Total a pagar' is not an amount: {prev!r}")
+                raise InvoiceParseError("line above 'Total a pagar' is not an amount")
             euros = m.group(1).replace(".", "") + "." + m.group(2)
             return Decimal(euros)
     raise InvoiceParseError("'Total a pagar' label not found")
@@ -116,5 +116,5 @@ def _extract_period(lines: list[str]) -> InvoicePeriod:
                 year = int(m.group(2))
                 last_day = calendar.monthrange(year, month)[1]
                 return InvoicePeriod(start=date(year, month, 1), end=date(year, month, last_day))
-            raise InvoiceParseError(f"unrecognized period format on line after label: {nxt!r}")
+            raise InvoiceParseError("unrecognized period format on line after label")
     raise InvoiceParseError("invoice period not found")
