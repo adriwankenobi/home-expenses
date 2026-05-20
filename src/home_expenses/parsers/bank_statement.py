@@ -67,17 +67,15 @@ def parse_bank_statement(path: Path) -> BankStatementFile:
             amount = _parse_amount(row[idx_amount])
         except BankStatementParseError as e:
             raise BankStatementParseError(f"{path}:{row_num}: {e}") from e
-        if amount >= 0:
-            continue
         try:
             txn_date = _parse_date(row[idx_date])
         except BankStatementParseError as e:
             raise BankStatementParseError(f"{path}:{row_num}: {e}") from e
         description = row[idx_desc].strip()
-        transactions.append(Transaction(date=txn_date, description=description, amount=-amount))
+        transactions.append(Transaction(date=txn_date, description=description, amount=abs(amount)))
 
     if not transactions:
-        raise BankStatementParseError(f"{path}: no debit rows found after filtering")
+        raise BankStatementParseError(f"{path}: no rows found")
 
     dates = [t.date for t in transactions]
     return BankStatementFile(

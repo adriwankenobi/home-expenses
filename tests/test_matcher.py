@@ -153,12 +153,16 @@ def test_manual_mapping_used_as_last_resort() -> None:
     assert result.items[0].category == "other"
 
 
-def test_unclassified_transaction_alerts_only() -> None:
+def test_unclassified_transactions_are_silently_dropped() -> None:
+    # The matcher now ignores transactions that don't match any configured
+    # category. No alert is generated and the txn does not become an Item.
     txn = make_transaction(description="UNKNOWN", amount=Decimal("3"))
     cfg = _config()
     result = match([txn], {}, cfg)
     assert result.items == ()
-    assert any(a.kind is AlertKind.UNCLASSIFIED_EXPENSE for a in result.alerts)
+    assert all(a.kind is not AlertKind.UNCLASSIFIED_EXPENSE for a in result.alerts)
+    # Still surfaced in the unmatched list for any callers that want it.
+    assert len(result.unmatched_transactions) == 1
 
 
 def test_orphan_invoice_alert() -> None:

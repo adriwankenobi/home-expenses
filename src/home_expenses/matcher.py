@@ -45,17 +45,7 @@ def match(
         if pattern_cat is None:
             pattern_cat = config.manual_mappings.get(txn.description)
         if pattern_cat is None:
-            alerts.append(
-                Alert(
-                    kind=AlertKind.UNCLASSIFIED_EXPENSE,
-                    message=f"unclassified transaction: {txn.description}",
-                    payload={
-                        "date": txn.date.isoformat(),
-                        "description": txn.description,
-                        "amount": str(txn.amount),
-                    },
-                )
-            )
+            # Silently drop transactions that don't match any configured category.
             unmatched.append(txn)
             continue
 

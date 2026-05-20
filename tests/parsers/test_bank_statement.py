@@ -17,21 +17,25 @@ FIXTURE = Path(__file__).resolve().parents[2] / "templates" / "bank_sample.csv"
 def test_parses_cp1252_encoded_file() -> None:
     result = parse_bank_statement(FIXTURE)
     assert result.source_path == str(FIXTURE)
-    # 2 debit rows kept; the credit row is skipped
-    assert len(result.transactions) == 2
+    # All 3 rows are kept; sign filtering is delegated to the matcher.
+    assert len(result.transactions) == 3
 
 
-def test_credit_rows_are_skipped() -> None:
+def test_credit_rows_are_included() -> None:
     result = parse_bank_statement(FIXTURE)
     descriptions = [t.description for t in result.transactions]
-    assert "ABONO NOMINA" not in descriptions
+    assert "ABONO NOMINA" in descriptions
 
 
 def test_amounts_are_positive_decimals() -> None:
     result = parse_bank_statement(FIXTURE)
+    # All amounts stored as absolute value regardless of sign in source.
     pepe = next(t for t in result.transactions if t.description == "RECIBO PEPE ENERGY")
     assert pepe.amount == Decimal("11.11")
     assert pepe.amount > 0
+    abono = next(t for t in result.transactions if t.description == "ABONO NOMINA")
+    assert abono.amount == Decimal("1500.00")
+    assert abono.amount > 0
 
 
 def test_dates_parsed_as_date_objects() -> None:
@@ -40,9 +44,10 @@ def test_dates_parsed_as_date_objects() -> None:
     assert pepe.date == date(2026, 5, 18)
 
 
-def test_date_range_is_min_max_of_kept_rows() -> None:
+def test_date_range_is_min_max_of_all_rows() -> None:
     result = parse_bank_statement(FIXTURE)
-    assert result.date_range == (date(2026, 5, 15), date(2026, 5, 18))
+    # Now includes the credit row's date.
+    assert result.date_range == (date(2026, 5, 2), date(2026, 5, 18))
 
 
 def test_missing_required_column_raises(tmp_path: Path) -> None:
