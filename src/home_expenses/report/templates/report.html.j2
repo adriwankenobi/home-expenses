@@ -115,14 +115,17 @@
   <table class="item-table" id="items">
     <thead>
       <tr>
-        <th>Period</th><th>Invoice date</th><th>Payment date</th><th>Description</th><th>Amount</th>
+        <th>Period start</th><th>Period end</th><th>Length</th>
+        <th>Invoice date</th><th>Payment date</th><th>Description</th><th>Amount</th>
         <th>Category</th><th>Invoice</th>
       </tr>
     </thead>
     <tbody id="items-body">
       {% for it in model.items|sort(attribute='transaction.date', reverse=True) %}
       <tr id="item-{{ loop.index0 }}" data-item-id="{{ loop.index0 }}">
-        <td>{% if it.invoice %}{{ it.invoice.period.start }} → {{ it.invoice.period.end }}{% endif %}</td>
+        <td>{% if it.invoice %}{{ it.invoice.period.start }}{% endif %}</td>
+        <td>{% if it.invoice %}{{ it.invoice.period.end }}{% endif %}</td>
+        <td></td>
         <td>{% if it.invoice %}{{ it.invoice.invoice_date }}{% endif %}</td>
         <td>{{ it.transaction.date }}</td>
         <td>{{ it.transaction.description }}</td>
@@ -153,12 +156,29 @@
   ];
 
   function buildCategoryColors(allItems) {
-    // Build the map from the ENTIRE dataset so colors stay stable across
-    // year filters (the same category always gets the same color).
-    const cats = Array.from(new Set(allItems.map(it => it.category))).sort();
+    // Colors are assigned in the category definition ORDER from config.json
+    // so every section (cards, donut, monthly bars, timeline) shares the
+    // same color sequence. Fall back to sorted unique categories from the
+    // items if no config info is available.
+    let cats = Object.keys(data.categories || {});
+    if (cats.length === 0) {
+      cats = Array.from(new Set(allItems.map(it => it.category))).sort();
+    }
     const map = {};
     cats.forEach((cat, i) => { map[cat] = PALETTE[i % PALETTE.length]; });
     return map;
+  }
+
+  // Return the categories that have items in the filtered set, in the
+  // config-defined order. Fallback to sorted unique categories if no
+  // config-order info is available.
+  function categoriesPresent(items) {
+    const present = new Set(items.map(it => it.category));
+    const configOrder = Object.keys(data.categories || {});
+    if (configOrder.length > 0) {
+      return configOrder.filter(c => present.has(c));
+    }
+    return Array.from(present).sort();
   }
 
   function highlightItems(ids) {
@@ -341,7 +361,7 @@
       if (it.invoice_path) c.invoiced += 1;
       if (it.period_end && it.date) c.lags.push(days(it.period_end, it.date));
     });
-    const cats = Object.keys(byCat).sort();
+    const cats = categoriesPresent(items);
     const grid = document.getElementById('cat-grid');
     grid.innerHTML = '';
     cats.forEach(cat => {
@@ -385,16 +405,21 @@
       tr.dataset.itemId = idx;
       const catColor = colorMap[it.category];
       const info = displayInfoFor(it);
-      let periodCell = '';
+      let periodStartCell = '';
+      let periodEndCell = '';
+      let periodLengthCell = '';
       let invoiceDateCell = '';
       if (info) {
         const d = daysInclusive(info.period_start, info.period_end);
-        periodCell = info.period_start + ' → ' + info.period_end +
-          ' (' + d + ' day' + (d === 1 ? '' : 's') + ')';
+        periodStartCell = info.period_start;
+        periodEndCell = info.period_end;
+        periodLengthCell = d + ' day' + (d === 1 ? '' : 's');
         invoiceDateCell = info.invoice_date;
       }
       tr.innerHTML =
-        '<td>' + periodCell + '</td>' +
+        '<td>' + periodStartCell + '</td>' +
+        '<td>' + periodEndCell + '</td>' +
+        '<td>' + periodLengthCell + '</td>' +
         '<td>' + invoiceDateCell + '</td>' +
         '<td>' + it.date + '</td>' +
         '<td>' + escapeHtml(it.description) + '</td>' +
@@ -431,7 +456,8 @@
       }
     });
     const months = Array.from(monthSet).sort();
-    const cats = Object.keys(byCat).sort();
+    const allCats = categoriesPresent(items);
+    const cats = allCats.filter(c => byCat[c] !== undefined);
     const traces = cats.map(cat => ({
       x: months,
       y: months.map(m => byCat[cat][m] || 0),
@@ -478,10 +504,11 @@
     items.forEach(it => {
       byCat[it.category] = (byCat[it.category] || 0) + parseFloat(it.amount);
     });
-    const labels = Object.keys(byCat);
+    // Labels in config-defined order, restricted to categories present.
+    const labels = categoriesPresent(items);
     Plotly.newPlot('chart-donut', [{
       labels: labels,
-      values: Object.values(byCat),
+      values: labels.map(c => byCat[c]),
       type: 'pie',
       hole: 0.5,
       marker: { colors: labels.map(c => colorMap[c]) },
@@ -501,7 +528,7 @@
     // Every element of an item uses the item's category color so multi-
     // category timelines stay legible. Traces are grouped by category
     // (5 traces per category) because Plotly applies one color per trace.
-    const cats = Array.from(new Set(items.map(it => it.category))).sort();
+    const cats = categoriesPresent(items);
     const catData = {};
     cats.forEach(cat => {
       catData[cat] = {

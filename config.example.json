@@ -6,7 +6,7 @@
   },
   "match_window_days_default": 30,
   "categories": {
-    "electricity": {
+    "PepeEnergy": {
       "invoice_folder": "/path/to/invoices/pepeenergy",
       "invoice_parser": "pepeenergy",
       "recurrence": "monthly",
@@ -14,32 +14,28 @@
       "match_window_days": 15,
       "start_date": "2024-01"
     },
-    "community_fee": {
-      "patterns": ["RECIBO CCPP LUIS AULA 28"],
-      "recurrence": "monthly"
-    },
-    "water": {
-      "patterns": ["RECIBO ECOCIUDAD ZARAGOZA SAU"],
-      "recurrence": "bimonthly"
-    },
-    "bank_savings": {
-      "patterns": ["LIQUIDACION AHORRO/CTA COR"],
-      "recurrence": "none"
-    },
-    "bank_fees": {
-      "patterns": ["COMISION MANTENIM. CTA."],
-      "recurrence": "yearly"
-    },
-    "phone": {
+    "PepePhone": {
       "invoice_folder": "/path/to/invoices/pepephone",
       "invoice_parser": "pepephone",
       "recurrence": "none",
       "patterns": ["RECIBO Pepe Mobile, S.L.U."],
       "match_window_days": 15
     },
-    "taxes": {
-      "patterns": ["RECIBO AYTO"],
+    "monthly": {
+      "patterns": ["RECIBO MENSUAL"],
+      "recurrence": "monthly"
+    },
+    "bimonthly": {
+      "patterns": ["RECIBO BIMENSUAL"],
+      "recurrence": "bimonthly"
+    },
+    "quarterly": {
+      "patterns": ["RECIBO TRIMESTRAL"],
       "recurrence": "quarterly"
+    },
+    "yearly": {
+      "patterns": ["RECIBO ANUAL"],
+      "recurrence": "yearly"
     }
   },
   "manual_mappings": {}
