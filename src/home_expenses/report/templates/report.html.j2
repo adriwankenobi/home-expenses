@@ -90,7 +90,7 @@
       </tr>
     </thead>
     <tbody id="items-body">
-      {% for it in model.items %}
+      {% for it in model.items|sort(attribute='transaction.date', reverse=True) %}
       <tr id="item-{{ loop.index0 }}" data-item-id="{{ loop.index0 }}">
         <td>{{ it.transaction.date }}</td>
         <td>{{ it.transaction.description }}</td>
@@ -115,6 +115,41 @@
     return data.items.filter(it => it.date.startsWith(activeYear + '-'));
   }
 
+  const PALETTE = [
+    '#4ec9b0', '#f48771', '#dcdcaa', '#9cdcfe', '#c586c0', '#ce9178',
+    '#569cd6', '#b5cea8', '#d7ba7d', '#646695', '#4fc1ff', '#d16969',
+  ];
+
+  function buildCategoryColors(allItems) {
+    // Build the map from the ENTIRE dataset so colors stay stable across
+    // year filters (the same category always gets the same color).
+    const cats = Array.from(new Set(allItems.map(it => it.category))).sort();
+    const map = {};
+    cats.forEach((cat, i) => { map[cat] = PALETTE[i % PALETTE.length]; });
+    return map;
+  }
+
+  function highlightItems(ids) {
+    if (!ids || ids.length === 0) return;
+    let first = null;
+    ids.forEach(id => {
+      const row = document.getElementById('item-' + id);
+      if (row) {
+        row.classList.add('highlighted');
+        setTimeout(() => row.classList.remove('highlighted'), 2000);
+        if (first === null) first = row;
+      }
+    });
+    if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function attachPointerCursor(div) {
+    div.on('plotly_hover', () => { div.style.cursor = 'pointer'; });
+    div.on('plotly_unhover', () => { div.style.cursor = ''; });
+  }
+
+  const colorMap = buildCategoryColors(data.items);
+
   function render() {
     const items = filtered();
     document.getElementById('kpi-total').textContent =
@@ -129,6 +164,8 @@
   }
 
   function renderItemsTable(items) {
+    // data.items is pre-sorted by date desc upstream; `items` (filtered)
+    // preserves that order, so simple iteration produces a desc table.
     const tbody = document.getElementById('items-body');
     tbody.innerHTML = '';
     items.forEach((it, idx) => {
@@ -148,22 +185,49 @@
   }
 
   function renderMonthly(items) {
+    // byMonthCat[ym][cat] = { total, entries: [{idx, date, amount, description}] }
     const byMonthCat = {};
-    items.forEach(it => {
+    items.forEach((it, i) => {
       const ym = it.date.slice(0, 7);
       byMonthCat[ym] = byMonthCat[ym] || {};
-      byMonthCat[ym][it.category] =
-        (byMonthCat[ym][it.category] || 0) + parseFloat(it.amount);
+      if (!byMonthCat[ym][it.category]) {
+        byMonthCat[ym][it.category] = { total: 0, entries: [] };
+      }
+      const cell = byMonthCat[ym][it.category];
+      cell.total += parseFloat(it.amount);
+      cell.entries.push({ idx: i, date: it.date, amount: it.amount });
     });
     const months = Object.keys(byMonthCat).sort();
-    const cats = Array.from(new Set(items.map(it => it.category)));
+    const cats = Array.from(new Set(items.map(it => it.category))).sort();
     const traces = cats.map(cat => ({
       x: months,
-      y: months.map(m => byMonthCat[m][cat] || 0),
+      y: months.map(m => (byMonthCat[m][cat] && byMonthCat[m][cat].total) || 0),
       name: cat,
       type: 'bar',
+      marker: { color: colorMap[cat] },
+      text: months.map(m => {
+        const cell = byMonthCat[m] && byMonthCat[m][cat];
+        if (!cell || cell.entries.length === 0) return '';
+        return cell.entries.map(e => e.date + ' &middot; ' + e.amount).join('<br>');
+      }),
+      customdata: months.map(m => {
+        const cell = byMonthCat[m] && byMonthCat[m][cat];
+        return cell ? cell.entries.map(e => e.idx) : [];
+      }),
+      hovertemplate: '<b>%{fullData.name}</b><br>Total: %{y}<br>%{text}<extra></extra>',
     }));
-    Plotly.newPlot('chart-monthly', traces, { barmode: 'stack', paper_bgcolor: '#1f1f1f', plot_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 } }, { displayModeBar: false });
+    Plotly.newPlot('chart-monthly', traces, {
+      barmode: 'stack',
+      paper_bgcolor: '#1f1f1f',
+      plot_bgcolor: '#1f1f1f',
+      font: { color: '#ddd' },
+      margin: { t: 20 },
+    }, { displayModeBar: false });
+    const div = document.getElementById('chart-monthly');
+    div.on('plotly_click', evt => {
+      highlightItems(evt.points[0].customdata || []);
+    });
+    attachPointerCursor(div);
   }
 
   function renderDonut(items) {
@@ -171,11 +235,14 @@
     items.forEach(it => {
       byCat[it.category] = (byCat[it.category] || 0) + parseFloat(it.amount);
     });
+    const labels = Object.keys(byCat);
     Plotly.newPlot('chart-donut', [{
-      labels: Object.keys(byCat),
+      labels: labels,
       values: Object.values(byCat),
       type: 'pie',
       hole: 0.5,
+      marker: { colors: labels.map(c => colorMap[c]) },
+      sort: false,
     }], { paper_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 } }, { displayModeBar: false });
   }
 
@@ -187,17 +254,18 @@
       type: 'scatter',
       text: items.map(it => it.description),
       customdata: items.map((_, i) => i),
+      marker: {
+        color: items.map(it => colorMap[it.category]),
+        size: 9,
+      },
+      hovertemplate: '%{x}<br>%{text}<br>%{y}<extra></extra>',
     };
     Plotly.newPlot('chart-timeline', [trace], { paper_bgcolor: '#1f1f1f', plot_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 } }, { displayModeBar: false });
-    document.getElementById('chart-timeline').on('plotly_click', evt => {
-      const idx = evt.points[0].customdata;
-      const row = document.getElementById('item-' + idx);
-      if (row) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        row.classList.add('highlighted');
-        setTimeout(() => row.classList.remove('highlighted'), 2000);
-      }
+    const div = document.getElementById('chart-timeline');
+    div.on('plotly_click', evt => {
+      highlightItems([evt.points[0].customdata]);
     });
+    attachPointerCursor(div);
   }
 
   function escapeHtml(s) {

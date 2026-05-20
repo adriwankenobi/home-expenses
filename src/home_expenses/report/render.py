@@ -29,7 +29,13 @@ def render_report(model: ReportModel, output_path: Path) -> None:
 
 
 def _serialize_model(model: ReportModel) -> str:
-    """Serialize the model into a JSON blob for in-page JS to consume."""
+    """Serialize the model into a JSON blob for in-page JS to consume.
+
+    Items are sorted by transaction date in descending order so that the
+    JSON's index order matches the server-rendered table and downstream
+    Plotly customdata references stay consistent.
+    """
+    sorted_items = sorted(model.items, key=lambda it: it.transaction.date, reverse=True)
     payload = {
         "generated_at": model.generated_at.isoformat(),
         "currency": model.currency,
@@ -43,7 +49,7 @@ def _serialize_model(model: ReportModel) -> str:
                 "invoice_path": (it.invoice.source_path if it.invoice is not None else None),
                 "invoice_id": (it.invoice.invoice_id if it.invoice is not None else None),
             }
-            for it in model.items
+            for it in sorted_items
         ],
         "alerts": [
             {"kind": a.kind.value, "message": a.message, "payload": a.payload} for a in model.alerts
