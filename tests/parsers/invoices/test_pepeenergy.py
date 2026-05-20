@@ -13,7 +13,7 @@ from home_expenses.parsers.invoices.pepeenergy import (
     parse_text,
 )
 
-TEMPLATE = Path(__file__).resolve().parents[3] / "templates" / "pepeenergy.txt"
+TEMPLATE = Path(__file__).resolve().parents[2] / "templates" / "pepeenergy.txt"
 
 
 def _load_template() -> str:
@@ -21,8 +21,13 @@ def _load_template() -> str:
 
 
 def _parseable_template() -> str:
-    """Return the template with the date placeholder substituted to a real date."""
-    return _load_template().replace("DD/MM/YY", "15/07/24")
+    """Return the template with placeholders substituted so it parses end-to-end."""
+    return (
+        _load_template()
+        .replace("DD/MM/YY", "15/07/24")
+        .replace("month YYYY", "mayo 2024")
+        .replace("X,XX €", "1,11 €")
+    )
 
 
 def test_extracts_amount_above_total_a_pagar_label() -> None:
@@ -36,8 +41,7 @@ def test_extracts_invoice_id_from_line_after_label() -> None:
 
 
 def test_extracts_invoice_date_from_fecha_emision() -> None:
-    text = _load_template().replace("DD/MM/YY", "15/07/24")
-    inv = parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
+    inv = parse_text(_parseable_template(), source_path="/tmp/x.pdf", content_hash="h")
     assert inv.invoice_date == date(2024, 7, 15)
 
 

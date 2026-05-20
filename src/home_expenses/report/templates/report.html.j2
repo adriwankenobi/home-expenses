@@ -14,7 +14,9 @@
   .alert { padding: 8px 12px; background: #3a1e1e; border-left: 4px solid #f48771; margin: 6px 0; border-radius: 4px; }
   .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
   .kpi { background: #2d2d2d; padding: 16px; border-radius: 6px; text-align: center; }
-  .kpi .big { font-size: 24px; font-weight: bold; color: #4ec9b0; }
+  /* General KPI cards use a neutral white so the per-category cards' colored
+     totals are the only colored numbers in the Summary section. */
+  .kpi .big { font-size: 24px; font-weight: bold; color: #fff; }
   .kpi .label { font-size: 11px; color: #aaa; text-transform: uppercase; margin-top: 4px; }
   /* Per-category cards mirror the KPI card style (dark bg, big green
      number, small uppercase label) but add a colored top border keyed to
@@ -24,7 +26,8 @@
   .cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }
   .cat-card { background: #2d2d2d; padding: 16px; border-radius: 6px; text-align: center; border-top: 3px solid #4ec9b0; }
   .cat-card .cat-name { font-size: 13px; font-weight: bold; color: #fff; margin-bottom: 8px; text-transform: lowercase; }
-  .cat-card .cat-total { font-size: 22px; font-weight: bold; color: #4ec9b0; margin-bottom: 10px; }
+  /* cat-total color is set per-card via inline style to match the category. */
+  .cat-card .cat-total { font-size: 22px; font-weight: bold; margin-bottom: 10px; }
   .cat-card .cat-divider { height: 1px; background: #444; margin: 0 8px 10px; }
   .cat-card .cat-subkpis { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .cat-card .sub { display: flex; flex-direction: column; }
@@ -190,6 +193,16 @@
 
   const colorMap = buildCategoryColors(data.items);
 
+  // Darken a hex color toward black by multiplying RGB by `factor`. Used to
+  // derive a tooltip background from the category color.
+  function darken(hex, factor) {
+    const n = parseInt(hex.slice(1), 16);
+    const r = Math.round(((n >> 16) & 0xff) * factor);
+    const g = Math.round(((n >> 8) & 0xff) * factor);
+    const b = Math.round((n & 0xff) * factor);
+    return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+  }
+
   // Currency symbol used in all tooltips and the items-table amount column.
   // Position is currency-aware: EUR/JPY render the symbol after the number
   // (e.g. "78.42 €"); USD/GBP render it before (e.g. "$78.42"). Unknown
@@ -276,7 +289,8 @@
       card.style.borderTopColor = colorMap[cat];
       card.innerHTML =
         '<div class="cat-name">' + escapeHtml(cat) + '</div>' +
-        '<div class="cat-total">' + formatAmount(c.total) + '</div>' +
+        '<div class="cat-total" style="color:' + colorMap[cat] + '">' +
+          formatAmount(c.total) + '</div>' +
         '<div class="cat-divider"></div>' +
         '<div class="cat-subkpis">' +
           '<div class="sub">' +
@@ -404,41 +418,50 @@
 
   function renderTimeline(items) {
     // Each item is drawn at y=amount as a horizontal "lifecycle":
-    //   - thick teal bar from period_start to period_end (consumption window)
-    //   - thin gray solid line from period_end to invoice_date
-    //   - thin orange dotted line from invoice_date to payment_date
-    //   - yellow diamond marker at invoice_date
-    //   - orange large dot at payment_date (the ONLY hoverable element)
-    // The payment dot's tooltip carries the full lifecycle info.
-    const periodLineX = [], periodLineY = [];
-    const lagLineX = [], lagLineY = [];
-    const waitLineX = [], waitLineY = [];
-    const invX = [], invY = [];
-    const payX = [], payY = [], payText = [], payCustom = [];
+    //   - thick bar from period_start to period_end (consumption window)
+    //   - thin solid line from period_end to invoice_date
+    //   - thin dotted line from invoice_date to payment_date
+    //   - open diamond at invoice_date
+    //   - filled dot at payment_date (the ONLY hoverable element)
+    // Every element of an item uses the item's category color so multi-
+    // category timelines stay legible. Traces are grouped by category
+    // (5 traces per category) because Plotly applies one color per trace.
+    const cats = Array.from(new Set(items.map(it => it.category))).sort();
+    const catData = {};
+    cats.forEach(cat => {
+      catData[cat] = {
+        periodLineX: [], periodLineY: [],
+        lagLineX: [], lagLineY: [],
+        waitLineX: [], waitLineY: [],
+        invX: [], invY: [],
+        payX: [], payY: [], payText: [], payCustom: [],
+      };
+    });
 
     items.forEach((it, i) => {
+      const cd = catData[it.category];
       const y = parseFloat(it.amount);
       if (it.period_start && it.period_end) {
-        periodLineX.push(it.period_start, it.period_end, null);
-        periodLineY.push(y, y, null);
+        cd.periodLineX.push(it.period_start, it.period_end, null);
+        cd.periodLineY.push(y, y, null);
       }
       if (it.period_end && it.invoice_date) {
-        lagLineX.push(it.period_end, it.invoice_date, null);
-        lagLineY.push(y, y, null);
+        cd.lagLineX.push(it.period_end, it.invoice_date, null);
+        cd.lagLineY.push(y, y, null);
       }
       if (it.invoice_date) {
-        waitLineX.push(it.invoice_date, it.date, null);
-        waitLineY.push(y, y, null);
-        invX.push(it.invoice_date);
-        invY.push(y);
+        cd.waitLineX.push(it.invoice_date, it.date, null);
+        cd.waitLineY.push(y, y, null);
+        cd.invX.push(it.invoice_date);
+        cd.invY.push(y);
       }
-      payX.push(it.date);
-      payY.push(y);
-      payCustom.push(i);
+      cd.payX.push(it.date);
+      cd.payY.push(y);
+      cd.payCustom.push(i);
       const lag = it.period_end ? days(it.period_end, it.date) : null;
       const periodDays = (it.period_start && it.period_end)
         ? daysInclusive(it.period_start, it.period_end) : null;
-      payText.push(
+      cd.payText.push(
         '<b>' + escapeHtml(it.description) + '</b><br>' +
         (it.period_start
           ? 'Period: ' + it.period_start + ' → ' + it.period_end +
@@ -451,29 +474,35 @@
       );
     });
 
-    const traces = [
-      { x: periodLineX, y: periodLineY, mode: 'lines+markers', type: 'scatter',
-        line: { color: '#4ec9b0', width: 9 },
-        marker: { color: '#4ec9b0', size: 6, symbol: 'line-ns-open' },
-        hoverinfo: 'skip', showlegend: false, name: '' },
-      { x: lagLineX, y: lagLineY, mode: 'lines', type: 'scatter',
-        line: { color: '#888', width: 2 },
-        hoverinfo: 'skip', showlegend: false, name: '' },
-      { x: waitLineX, y: waitLineY, mode: 'lines', type: 'scatter',
-        line: { color: '#f48771', width: 2, dash: 'dot' },
-        hoverinfo: 'skip', showlegend: false, name: '' },
-      { x: invX, y: invY, mode: 'markers', type: 'scatter',
-        marker: { color: '#dcdcaa', size: 10, symbol: 'diamond' },
-        hoverinfo: 'skip', showlegend: false, name: '' },
-      // The single hoverable trace.
-      { x: payX, y: payY, text: payText, customdata: payCustom,
-        mode: 'markers', type: 'scatter',
-        marker: { color: '#f48771', size: 13 },
-        hovertemplate: '%{text}<extra></extra>',
-        hoverlabel: { bgcolor: '#3a1e1e', bordercolor: '#f48771',
-                      font: { color: '#ffe6dc' } },
-        showlegend: false, name: '' },
-    ];
+    const traces = [];
+    cats.forEach(cat => {
+      const cd = catData[cat];
+      const c = colorMap[cat];
+      traces.push(
+        { x: cd.periodLineX, y: cd.periodLineY, mode: 'lines+markers',
+          type: 'scatter',
+          line: { color: c, width: 9 },
+          marker: { color: c, size: 6, symbol: 'line-ns-open' },
+          hoverinfo: 'skip', showlegend: false, name: '' },
+        { x: cd.lagLineX, y: cd.lagLineY, mode: 'lines', type: 'scatter',
+          line: { color: c, width: 2 },
+          hoverinfo: 'skip', showlegend: false, name: '' },
+        { x: cd.waitLineX, y: cd.waitLineY, mode: 'lines', type: 'scatter',
+          line: { color: c, width: 2, dash: 'dot' },
+          hoverinfo: 'skip', showlegend: false, name: '' },
+        { x: cd.invX, y: cd.invY, mode: 'markers', type: 'scatter',
+          marker: { color: c, size: 11, symbol: 'diamond' },
+          hoverinfo: 'skip', showlegend: false, name: '' },
+        // The single hoverable trace per category.
+        { x: cd.payX, y: cd.payY, text: cd.payText, customdata: cd.payCustom,
+          mode: 'markers', type: 'scatter',
+          marker: { color: c, size: 13 },
+          hovertemplate: '%{text}<extra></extra>',
+          hoverlabel: { bgcolor: darken(c, 0.25), bordercolor: c,
+                        font: { color: '#fff' } },
+          showlegend: false, name: '' },
+      );
+    });
 
     Plotly.newPlot('chart-timeline', traces, Object.assign({}, STATIC_LAYOUT_BASE, {
       hovermode: 'closest',

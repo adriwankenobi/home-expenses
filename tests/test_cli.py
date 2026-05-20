@@ -15,8 +15,8 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path]:
     statements_dir.mkdir()
     invoices_dir = tmp_path / "pepe"
     invoices_dir.mkdir()
-    repo_root = Path(__file__).resolve().parents[1]
-    shutil.copy(repo_root / "templates" / "bank_sample.csv", statements_dir)
+    templates_dir = Path(__file__).resolve().parent / "templates"
+    shutil.copy(templates_dir / "bank_statement.csv", statements_dir)
 
     cfg_payload = {
         "currency": "EUR",

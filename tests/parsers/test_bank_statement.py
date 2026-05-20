@@ -11,7 +11,7 @@ from home_expenses.parsers.bank_statement import (
     parse_bank_statement,
 )
 
-FIXTURE = Path(__file__).resolve().parents[2] / "templates" / "bank_sample.csv"
+FIXTURE = Path(__file__).resolve().parents[1] / "templates" / "bank_statement.csv"
 
 
 def test_parses_cp1252_encoded_file() -> None:

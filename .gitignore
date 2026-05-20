@@ -21,10 +21,9 @@ __pycache__/
 .superpowers/
 
 # Local working artifacts (design docs, project-local Claude settings,
-# sanitized sample templates, helper scripts)
+# helper scripts).
 docs/
 .claude/
-templates/
 scripts/
 
 # OS

@@ -1,13 +1,13 @@
 {
   "currency": "EUR",
   "bank_statements": {
-    "dir": "/Users/you/path/to/bank_statements",
+    "dir": "/path/to/bank_statements",
     "glob": "*.csv"
   },
   "match_window_days_default": 30,
   "categories": {
     "electricity": {
-      "invoice_folder": "/Users/you/path/to/invoices/pepeenergy",
+      "invoice_folder": "/path/to/invoices/pepeenergy",
       "invoice_parser": "pepeenergy",
       "recurrence": "monthly",
       "patterns": ["RECIBO PEPE ENERGY"],
@@ -35,8 +35,11 @@
       "recurrence": "yearly"
     },
     "phone": {
+      "invoice_folder": "/path/to/invoices/pepephone",
+      "invoice_parser": "pepephone",
+      "recurrence": "none",
       "patterns": ["RECIBO Pepe Mobile, S.L.U."],
-      "recurrence": "monthly"
+      "match_window_days": 15
     }
   },
   "manual_mappings": {}

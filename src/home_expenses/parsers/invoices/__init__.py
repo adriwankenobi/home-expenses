@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from home_expenses.models import Invoice
-from home_expenses.parsers.invoices import pepeenergy
+from home_expenses.parsers.invoices import pepeenergy, pepephone
 
 ParseFn = Callable[[Path], Invoice]
 MatchesFn = Callable[[Path], bool]
@@ -23,6 +23,10 @@ _REGISTRY: dict[str, ParserSpec] = {
     pepeenergy.PARSER_NAME: ParserSpec(
         parse=pepeenergy.parse,
         matches_filename=pepeenergy.matches_filename,
+    ),
+    pepephone.PARSER_NAME: ParserSpec(
+        parse=pepephone.parse,
+        matches_filename=pepephone.matches_filename,
     ),
 }
 
