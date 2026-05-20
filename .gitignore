@@ -20,9 +20,12 @@ __pycache__/
 # Brainstorming
 .superpowers/
 
-# Local working artifacts (design docs, project-local Claude settings)
+# Local working artifacts (design docs, project-local Claude settings,
+# sanitized sample templates, helper scripts)
 docs/
 .claude/
+templates/
+scripts/
 
 # OS
 .DS_Store
