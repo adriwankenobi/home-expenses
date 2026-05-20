@@ -37,6 +37,9 @@
   .item-table th, .item-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #333; }
   .item-table th { color: #888; text-transform: uppercase; font-size: 11px; }
   .item-table tr.highlighted { background: #094771; }
+  /* Anchors inside the items table inherit the row color so the 📎 invoice
+     link matches the rest of the category-tinted row. */
+  .item-table a { color: inherit; }
   a { color: #4ec9b0; text-decoration: none; }
   .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   /* Static charts: default cursor everywhere; only flip to pointer when the
@@ -224,6 +227,55 @@
   // ---- date helpers ----
   function days(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 86400000); }
   function daysInclusive(a, b) { return days(a, b) + 1; }
+  function pad2(n) { return String(n).padStart(2, '0'); }
+
+  // For items lacking a real invoice (pattern- or manual-matched), guess
+  // the period and invoice date from the category's recurrence: assume
+  // the payment is for the period immediately PRIOR to the one containing
+  // the payment date. Quarterly payment in April → Q1; monthly April →
+  // March; bimonthly April → Jan–Feb; yearly 2026 → 2025. Returns null
+  // for "none". invoice_date is the last day of the synthetic period.
+  function syntheticPeriodFor(paymentIso, recurrence) {
+    if (!recurrence || recurrence === 'none') return null;
+    const d = new Date(paymentIso + 'T00:00:00');
+    const y = d.getFullYear();
+    const m = d.getMonth(); // 0-based
+
+    let width, containingStartMonth;
+    switch (recurrence) {
+      case 'monthly':   width = 1;  containingStartMonth = m; break;
+      case 'bimonthly': width = 2;  containingStartMonth = Math.floor(m / 2) * 2; break;
+      case 'quarterly': width = 3;  containingStartMonth = Math.floor(m / 3) * 3; break;
+      case 'yearly':    width = 12; containingStartMonth = 0; break;
+      default: return null;
+    }
+    let startMonth = containingStartMonth - width;
+    let startYear = y;
+    if (startMonth < 0) { startMonth += 12; startYear -= 1; }
+    const endMonth = startMonth + width - 1;
+    const lastDay = new Date(startYear, endMonth + 1, 0).getDate();
+    const start = `${startYear}-${pad2(startMonth + 1)}-01`;
+    const end = `${startYear}-${pad2(endMonth + 1)}-${pad2(lastDay)}`;
+    return { period_start: start, period_end: end, invoice_date: end };
+  }
+
+  // Return the period/invoice info to DISPLAY for an item: real values if
+  // present (invoice attached), otherwise synthesized from the category's
+  // recurrence. Returns null if there's nothing to display (no invoice and
+  // recurrence is 'none' or unknown).
+  function displayInfoFor(it) {
+    if (it.period_start && it.period_end && it.invoice_date) {
+      return {
+        period_start: it.period_start,
+        period_end: it.period_end,
+        invoice_date: it.invoice_date,
+        synthetic: false,
+      };
+    }
+    const synth = syntheticPeriodFor(it.date, data.categories[it.category]);
+    if (synth === null) return null;
+    return { ...synth, synthetic: true };
+  }
   function splitPeriodAcrossMonths(start, end) {
     // Returns { 'YYYY-MM': fraction } summing to 1 across the months the
     // period covers, weighted by day count in each month.
@@ -244,8 +296,24 @@
     return out;
   }
 
+  // For items lacking a real invoice, fold the synthesized period/invoice
+  // date into the item so every downstream renderer sees a single,
+  // consistent view (table, monthly consumption, timeline).
+  function enrichItems(items) {
+    return items.map(it => {
+      if (it.period_start && it.period_end && it.invoice_date) return it;
+      const info = displayInfoFor(it);
+      if (info === null) return it;
+      return Object.assign({}, it, {
+        period_start: info.period_start,
+        period_end: info.period_end,
+        invoice_date: info.invoice_date,
+      });
+    });
+  }
+
   function render() {
-    const items = filtered();
+    const items = enrichItems(filtered());
     const total = items.reduce((s, it) => s + parseFloat(it.amount), 0);
     document.getElementById('kpi-total').textContent = formatAmount(total);
     document.getElementById('kpi-txns').textContent = items.length;
@@ -315,15 +383,19 @@
       const tr = document.createElement('tr');
       tr.id = 'item-' + idx;
       tr.dataset.itemId = idx;
+      const catColor = colorMap[it.category];
+      const info = displayInfoFor(it);
       let periodCell = '';
-      if (it.period_start && it.period_end) {
-        const d = daysInclusive(it.period_start, it.period_end);
-        periodCell = it.period_start + ' → ' + it.period_end +
+      let invoiceDateCell = '';
+      if (info) {
+        const d = daysInclusive(info.period_start, info.period_end);
+        periodCell = info.period_start + ' → ' + info.period_end +
           ' (' + d + ' day' + (d === 1 ? '' : 's') + ')';
+        invoiceDateCell = info.invoice_date;
       }
       tr.innerHTML =
         '<td>' + periodCell + '</td>' +
-        '<td>' + (it.invoice_date || '') + '</td>' +
+        '<td>' + invoiceDateCell + '</td>' +
         '<td>' + it.date + '</td>' +
         '<td>' + escapeHtml(it.description) + '</td>' +
         '<td>' + formatAmount(it.amount) + '</td>' +
@@ -331,6 +403,9 @@
         '<td>' + (it.invoice_path
           ? '<a href="file://' + escapeHtml(it.invoice_path) + '" target="_blank">📎</a>'
           : '') + '</td>';
+      // Entire row tinted in the category color, plus a thicker left ribbon.
+      tr.style.color = catColor;
+      tr.firstElementChild.style.borderLeft = '3px solid ' + catColor;
       tbody.appendChild(tr);
     });
   }

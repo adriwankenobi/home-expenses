@@ -18,10 +18,6 @@
       "patterns": ["RECIBO CCPP LUIS AULA 28"],
       "recurrence": "monthly"
     },
-    "taxes": {
-      "patterns": ["RECIBO AYTO"],
-      "recurrence": "yearly"
-    },
     "water": {
       "patterns": ["RECIBO ECOCIUDAD ZARAGOZA SAU"],
       "recurrence": "bimonthly"
@@ -40,6 +36,10 @@
       "recurrence": "none",
       "patterns": ["RECIBO Pepe Mobile, S.L.U."],
       "match_window_days": 15
+    },
+    "taxes": {
+      "patterns": ["RECIBO AYTO"],
+      "recurrence": "quarterly"
     }
   },
   "manual_mappings": {}

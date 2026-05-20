@@ -85,3 +85,7 @@ class ReportModel:
     items: tuple[Item, ...]
     alerts: tuple[Alert, ...]
     years: tuple[int, ...]
+    # Map of category name → recurrence kind ("monthly" / "bimonthly" /
+    # "quarterly" / "yearly" / "none"). Used by the renderer to synthesize
+    # period and invoice-date placeholders for items lacking a real invoice.
+    categories: dict[str, str] = field(default_factory=dict)

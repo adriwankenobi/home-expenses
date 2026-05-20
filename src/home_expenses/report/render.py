@@ -40,6 +40,7 @@ def _serialize_model(model: ReportModel) -> str:
         "generated_at": model.generated_at.isoformat(),
         "currency": model.currency,
         "years": list(model.years),
+        "categories": dict(model.categories),
         "items": [
             {
                 "date": it.transaction.date.isoformat(),

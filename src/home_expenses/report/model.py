@@ -14,6 +14,7 @@ def build_report_model(
     alerts: Iterable[Alert],
     currency: str,
     generated_at: date,
+    categories: dict[str, str] | None = None,
 ) -> ReportModel:
     items_t = tuple(items)
     years = tuple(sorted({it.transaction.date.year for it in items_t}, reverse=True))
@@ -23,4 +24,5 @@ def build_report_model(
         items=items_t,
         alerts=tuple(alerts),
         years=years,
+        categories=dict(categories) if categories else {},
     )

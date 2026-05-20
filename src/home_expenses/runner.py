@@ -63,6 +63,7 @@ def run_report(config: Config, output_path: Path, today: date) -> RunSummary:
         alerts=all_alerts,
         currency=config.currency,
         generated_at=today,
+        categories={name: cat.recurrence for name, cat in config.categories.items()},
     )
     render_report(model, output_path)
     cache.flush()
