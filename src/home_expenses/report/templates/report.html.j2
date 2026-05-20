@@ -12,10 +12,24 @@
   .year-tab.active { background: #094771; border-color: #007acc; color: #fff; }
   .section { margin: 24px 0; padding: 16px; background: #1f1f1f; border-radius: 8px; border: 1px solid #333; }
   .alert { padding: 8px 12px; background: #3a1e1e; border-left: 4px solid #f48771; margin: 6px 0; border-radius: 4px; }
-  .kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
   .kpi { background: #2d2d2d; padding: 16px; border-radius: 6px; text-align: center; }
   .kpi .big { font-size: 24px; font-weight: bold; color: #4ec9b0; }
-  .kpi .label { font-size: 11px; color: #aaa; text-transform: uppercase; }
+  .kpi .label { font-size: 11px; color: #aaa; text-transform: uppercase; margin-top: 4px; }
+  /* Per-category cards mirror the KPI card style (dark bg, big green
+     number, small uppercase label) but add a colored top border keyed to
+     the category color so they connect visually to the charts. Below the
+     big total, two mini-KPIs (transactions / avg lag) sit in a 2-col grid
+     that recurses the same big-number-plus-label pattern. */
+  .cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }
+  .cat-card { background: #2d2d2d; padding: 16px; border-radius: 6px; text-align: center; border-top: 3px solid #4ec9b0; }
+  .cat-card .cat-name { font-size: 13px; font-weight: bold; color: #fff; margin-bottom: 8px; text-transform: lowercase; }
+  .cat-card .cat-total { font-size: 22px; font-weight: bold; color: #4ec9b0; margin-bottom: 10px; }
+  .cat-card .cat-divider { height: 1px; background: #444; margin: 0 8px 10px; }
+  .cat-card .cat-subkpis { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .cat-card .sub { display: flex; flex-direction: column; }
+  .cat-card .sub-value { font-size: 16px; font-weight: bold; color: #ddd; }
+  .cat-card .sub-label { font-size: 10px; color: #aaa; text-transform: uppercase; margin-top: 2px; }
   .item-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .item-table th, .item-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #333; }
   .item-table th { color: #888; text-transform: uppercase; font-size: 11px; }
@@ -62,12 +76,12 @@
 <div class="section">
   <h2>Summary</h2>
   <div class="kpi-row">
-    <div class="kpi"><div class="big" id="kpi-total">—</div><div class="label">Total ({{ model.currency }})</div></div>
+    <div class="kpi"><div class="big" id="kpi-total">—</div><div class="label">Total</div></div>
     <div class="kpi"><div class="big" id="kpi-txns">—</div><div class="label">Transactions</div></div>
     <div class="kpi"><div class="big" id="kpi-cats">—</div><div class="label">Categories</div></div>
-    <div class="kpi"><div class="big" id="kpi-lag">—</div><div class="label">Avg lag (days)</div></div>
     <div class="kpi"><div class="big" id="kpi-alerts">{{ model.alerts | length }}</div><div class="label">Open alerts</div></div>
   </div>
+  <div class="cat-grid" id="cat-grid"></div>
 </div>
 
 <div class="section">
@@ -80,15 +94,9 @@
   <div id="chart-consumed"></div>
 </div>
 
-<div class="chart-row">
-  <div class="section">
-    <h2>By category</h2>
-    <div id="chart-donut"></div>
-  </div>
-  <div class="section">
-    <h2>Recurring</h2>
-    <div id="recurring-grid">(grid will be populated by JS)</div>
-  </div>
+<div class="section">
+  <h2>By category</h2>
+  <div id="chart-donut"></div>
 </div>
 
 <div class="section">
@@ -182,6 +190,24 @@
 
   const colorMap = buildCategoryColors(data.items);
 
+  // Currency symbol used in all tooltips and the items-table amount column.
+  // Position is currency-aware: EUR/JPY render the symbol after the number
+  // (e.g. "78.42 €"); USD/GBP render it before (e.g. "$78.42"). Unknown
+  // currencies fall back to the ISO code prefixed before the value.
+  const CURRENCY_SYMBOLS = { EUR: '€', USD: '$', GBP: '£', JPY: '¥' };
+  const SYMBOL_AFTER = new Set(['EUR', 'JPY']);
+  const currencySymbol = CURRENCY_SYMBOLS[data.currency] || data.currency;
+  const symbolAfter = SYMBOL_AFTER.has(data.currency);
+  function formatAmount(value) {
+    const n = parseFloat(value).toFixed(2);
+    return symbolAfter ? n + ' ' + currencySymbol : currencySymbol + n;
+  }
+  function fmtAmountTemplate(numberToken) {
+    // Build a Plotly hovertemplate fragment that places the currency symbol
+    // in the correct position relative to the number token (e.g. "%{y:.2f}").
+    return symbolAfter ? numberToken + ' ' + currencySymbol : currencySymbol + numberToken;
+  }
+
   // ---- date helpers ----
   function days(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 86400000); }
   function daysInclusive(a, b) { return days(a, b) + 1; }
@@ -207,12 +233,12 @@
 
   function render() {
     const items = filtered();
-    document.getElementById('kpi-total').textContent =
-      items.reduce((s, it) => s + parseFloat(it.amount), 0).toFixed(2);
+    const total = items.reduce((s, it) => s + parseFloat(it.amount), 0);
+    document.getElementById('kpi-total').textContent = formatAmount(total);
     document.getElementById('kpi-txns').textContent = items.length;
     document.getElementById('kpi-cats').textContent =
       new Set(items.map(it => it.category)).size;
-    document.getElementById('kpi-lag').textContent = computeAvgLag(items);
+    renderCategoryBreakdown(items);
     renderItemsTable(items);
     renderSpent(items);
     renderConsumed(items);
@@ -220,12 +246,50 @@
     renderTimeline(items);
   }
 
-  function computeAvgLag(items) {
-    const lags = items
-      .filter(it => it.period_end && it.date)
-      .map(it => days(it.period_end, it.date));
-    if (lags.length === 0) return '—';
-    return Math.round(lags.reduce((s, n) => s + n, 0) / lags.length);
+  function renderCategoryBreakdown(items) {
+    // Per-category KPI cards (one card per category) styled like the main
+    // KPI strip. Total amount is the big number; items count and avg lag
+    // appear as small uppercase meta lines below.
+    const byCat = {};
+    items.forEach(it => {
+      byCat[it.category] = byCat[it.category]
+        || { total: 0, count: 0, invoiced: 0, lags: [] };
+      const c = byCat[it.category];
+      c.total += parseFloat(it.amount);
+      c.count += 1;
+      if (it.invoice_path) c.invoiced += 1;
+      if (it.period_end && it.date) c.lags.push(days(it.period_end, it.date));
+    });
+    const cats = Object.keys(byCat).sort();
+    const grid = document.getElementById('cat-grid');
+    grid.innerHTML = '';
+    cats.forEach(cat => {
+      const c = byCat[cat];
+      const avgLagValue = c.lags.length === 0
+        ? '—'
+        : Math.round(c.lags.reduce((s, n) => s + n, 0) / c.lags.length) + ' days';
+      const txnsValue = c.invoiced === c.count
+        ? String(c.count)
+        : c.invoiced + ' / ' + c.count;
+      const card = document.createElement('div');
+      card.className = 'cat-card';
+      card.style.borderTopColor = colorMap[cat];
+      card.innerHTML =
+        '<div class="cat-name">' + escapeHtml(cat) + '</div>' +
+        '<div class="cat-total">' + formatAmount(c.total) + '</div>' +
+        '<div class="cat-divider"></div>' +
+        '<div class="cat-subkpis">' +
+          '<div class="sub">' +
+            '<div class="sub-value">' + txnsValue + '</div>' +
+            '<div class="sub-label">Transactions</div>' +
+          '</div>' +
+          '<div class="sub">' +
+            '<div class="sub-value">' + avgLagValue + '</div>' +
+            '<div class="sub-label">Avg lag</div>' +
+          '</div>' +
+        '</div>';
+      grid.appendChild(card);
+    });
   }
 
   function renderItemsTable(items) {
@@ -248,7 +312,7 @@
         '<td>' + (it.invoice_date || '') + '</td>' +
         '<td>' + it.date + '</td>' +
         '<td>' + escapeHtml(it.description) + '</td>' +
-        '<td>' + it.amount + '</td>' +
+        '<td>' + formatAmount(it.amount) + '</td>' +
         '<td>' + escapeHtml(it.category) + '</td>' +
         '<td>' + (it.invoice_path
           ? '<a href="file://' + escapeHtml(it.invoice_path) + '" target="_blank">📎</a>'
@@ -258,17 +322,23 @@
   }
 
   // Builds a stacked-bar monthly chart, aggregating amounts under a
-  // category-supplied attribution rule. `attribute(item)` returns a map of
-  // 'YYYY-MM' → amount (allowing one item to contribute to many months).
+  // category-supplied attribution rule. `attribute(item, idx)` returns a map
+  // of 'YYYY-MM' → amount (allowing one item to contribute to many months).
+  // Each bar segment carries the indices of the items it aggregates so a
+  // click can jump to them in the items list.
   function renderMonthlyChart(divId, items, attribute) {
     const monthSet = new Set();
-    const byCat = {};
-    items.forEach(it => {
-      const contrib = attribute(it);
+    const byCat = {};       // byCat[cat][month] = summed amount
+    const cellIndices = {}; // cellIndices[cat][month] = [item indices]
+    items.forEach((it, i) => {
+      const contrib = attribute(it, i);
       for (const m in contrib) {
         monthSet.add(m);
         byCat[it.category] = byCat[it.category] || {};
         byCat[it.category][m] = (byCat[it.category][m] || 0) + contrib[m];
+        cellIndices[it.category] = cellIndices[it.category] || {};
+        cellIndices[it.category][m] = cellIndices[it.category][m] || [];
+        cellIndices[it.category][m].push(i);
       }
     });
     const months = Array.from(monthSet).sort();
@@ -279,12 +349,17 @@
       name: cat,
       type: 'bar',
       marker: { color: colorMap[cat] },
-      hovertemplate: '<b>' + cat + '</b><br>%{x}<br>%{y:.2f}<extra></extra>',
+      customdata: months.map(m => (cellIndices[cat] && cellIndices[cat][m]) || []),
+      hovertemplate:
+        '<b>' + cat + '</b><br>%{x|%b %Y}<br>' + fmtAmountTemplate('%{y:.2f}') + '<extra></extra>',
     }));
     Plotly.newPlot(divId, traces, Object.assign({}, STATIC_LAYOUT_BASE, {
       barmode: 'stack',
     }), STATIC_CONFIG);
     const div = document.getElementById(divId);
+    div.on('plotly_click', evt => {
+      highlightItems(evt.points[0].customdata || []);
+    });
     attachPointerCursor(div);
   }
 
@@ -322,6 +397,8 @@
       hole: 0.5,
       marker: { colors: labels.map(c => colorMap[c]) },
       sort: false,
+      hovertemplate:
+        '<b>%{label}</b><br>' + fmtAmountTemplate('%{value:.2f}') + ' (%{percent})<extra></extra>',
     }], { paper_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 } }, { displayModeBar: false });
   }
 
@@ -369,7 +446,7 @@
           : '') +
         (it.invoice_date ? 'Invoice: ' + it.invoice_date + '<br>' : '') +
         'Payment: ' + it.date + '<br>' +
-        it.amount +
+        formatAmount(it.amount) +
         (lag !== null ? '<br>Lag (period→payment): ' + lag + ' days' : '')
       );
     });
