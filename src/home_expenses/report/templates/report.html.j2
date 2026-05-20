@@ -25,7 +25,7 @@
      that recurses the same big-number-plus-label pattern. */
   .cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }
   .cat-card { background: #2d2d2d; padding: 16px; border-radius: 6px; text-align: center; border-top: 3px solid #4ec9b0; }
-  .cat-card .cat-name { font-size: 13px; font-weight: bold; color: #fff; margin-bottom: 8px; text-transform: lowercase; }
+  .cat-card .cat-name { font-size: 13px; font-weight: bold; color: #fff; margin-bottom: 8px; }
   /* cat-total color is set per-card via inline style to match the category. */
   .cat-card .cat-total { font-size: 22px; font-weight: bold; margin-bottom: 10px; }
   .cat-card .cat-divider { height: 1px; background: #444; margin: 0 8px 10px; }
@@ -250,14 +250,19 @@
   function pad2(n) { return String(n).padStart(2, '0'); }
 
   // For items lacking a real invoice (pattern- or manual-matched), guess
-  // the period and invoice date from the category's recurrence: assume
-  // the payment is for the period immediately PRIOR to the one containing
-  // the payment date. Quarterly payment in April → Q1; monthly April →
-  // March; bimonthly April → Jan–Feb; yearly 2026 → 2025. Returns null
-  // for "none". invoice_date is the last day of the synthetic period.
+  // the period and invoice date from the category's recurrence. Rule: use
+  // the most recent period whose period_end is strictly before
+  // (payment_date + 1 day) — i.e. the period prior to the one containing
+  // (payment_date + 1). The +1 shift makes the on-last-day case fall out
+  // naturally without a branch. Examples: quarterly 2026-03-31 → Q1 2026;
+  // quarterly 2026-04-15 → Q1 2026; monthly 2026-04-30 → April; monthly
+  // 2026-05-01 → April; yearly 2026-12-31 → 2026; yearly 2026-04-15 →
+  // 2025. Returns null for "none". invoice_date is the last day of the
+  // synthetic period.
   function syntheticPeriodFor(paymentIso, recurrence) {
     if (!recurrence || recurrence === 'none') return null;
     const d = new Date(paymentIso + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
     const y = d.getFullYear();
     const m = d.getMonth(); // 0-based
 
@@ -354,11 +359,10 @@
     const byCat = {};
     items.forEach(it => {
       byCat[it.category] = byCat[it.category]
-        || { total: 0, count: 0, invoiced: 0, lags: [] };
+        || { total: 0, count: 0, lags: [] };
       const c = byCat[it.category];
       c.total += parseFloat(it.amount);
       c.count += 1;
-      if (it.invoice_path) c.invoiced += 1;
       if (it.period_end && it.date) c.lags.push(days(it.period_end, it.date));
     });
     const cats = categoriesPresent(items);
@@ -369,9 +373,7 @@
       const avgLagValue = c.lags.length === 0
         ? '—'
         : Math.round(c.lags.reduce((s, n) => s + n, 0) / c.lags.length) + ' days';
-      const txnsValue = c.invoiced === c.count
-        ? String(c.count)
-        : c.invoiced + ' / ' + c.count;
+      const txnsValue = String(c.count);
       const card = document.createElement('div');
       card.className = 'cat-card';
       card.style.borderTopColor = colorMap[cat];
@@ -519,15 +521,15 @@
   }
 
   function renderTimeline(items) {
-    // Each item is drawn at y=amount as a horizontal "lifecycle":
+    // Gantt-style layout: one row per item, sorted most-recent first.
     //   - thick bar from period_start to period_end (consumption window)
     //   - thin solid line from period_end to invoice_date
     //   - thin dotted line from invoice_date to payment_date
     //   - open diamond at invoice_date
     //   - filled dot at payment_date (the ONLY hoverable element)
-    // Every element of an item uses the item's category color so multi-
-    // category timelines stay legible. Traces are grouped by category
-    // (5 traces per category) because Plotly applies one color per trace.
+    // Every element of an item uses the item's category color. Traces are
+    // grouped by category (5 traces per category) because Plotly applies one
+    // color per trace; legendgroup keeps a category's 5 traces in sync.
     const cats = categoriesPresent(items);
     const catData = {};
     cats.forEach(cat => {
@@ -540,9 +542,17 @@
       };
     });
 
+    // Build per-item y position from a date-asc sort, so the oldest item
+    // sits at the top (y=0; the axis is reversed below to put 0 on top).
+    const sortKey = it => it.period_start || it.invoice_date || it.date || '';
+    const yPos = new Array(items.length);
+    items.map((_, i) => i)
+      .sort((a, b) => sortKey(items[a]).localeCompare(sortKey(items[b])))
+      .forEach((origIdx, pos) => { yPos[origIdx] = pos; });
+
     items.forEach((it, i) => {
       const cd = catData[it.category];
-      const y = parseFloat(it.amount);
+      const y = yPos[i];
       if (it.period_start && it.period_end) {
         cd.periodLineX.push(it.period_start, it.period_end, null);
         cd.periodLineY.push(y, y, null);
@@ -576,6 +586,10 @@
       );
     });
 
+    // Group all 5 traces per category into the same legendgroup so a single
+    // legend click toggles the whole category. The payment-marker trace
+    // carries the visible legend entry; the others stay legend-hidden but
+    // toggle in sync via legendgroup.
     const traces = [];
     cats.forEach(cat => {
       const cd = catData[cat];
@@ -585,30 +599,36 @@
           type: 'scatter',
           line: { color: c, width: 9 },
           marker: { color: c, size: 6, symbol: 'line-ns-open' },
-          hoverinfo: 'skip', showlegend: false, name: '' },
+          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat },
         { x: cd.lagLineX, y: cd.lagLineY, mode: 'lines', type: 'scatter',
           line: { color: c, width: 2 },
-          hoverinfo: 'skip', showlegend: false, name: '' },
+          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat },
         { x: cd.waitLineX, y: cd.waitLineY, mode: 'lines', type: 'scatter',
           line: { color: c, width: 2, dash: 'dot' },
-          hoverinfo: 'skip', showlegend: false, name: '' },
+          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat },
         { x: cd.invX, y: cd.invY, mode: 'markers', type: 'scatter',
           marker: { color: c, size: 11, symbol: 'diamond' },
-          hoverinfo: 'skip', showlegend: false, name: '' },
-        // The single hoverable trace per category.
+          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat },
+        // The single hoverable trace per category; also the legend entry.
         { x: cd.payX, y: cd.payY, text: cd.payText, customdata: cd.payCustom,
           mode: 'markers', type: 'scatter',
           marker: { color: c, size: 13 },
           hovertemplate: '%{text}<extra></extra>',
           hoverlabel: { bgcolor: darken(c, 0.25), bordercolor: c,
                         font: { color: '#fff' } },
-          showlegend: false, name: '' },
+          showlegend: true, legendgroup: cat, name: cat },
       );
     });
 
     Plotly.newPlot('chart-timeline', traces, Object.assign({}, STATIC_LAYOUT_BASE, {
       hovermode: 'closest',
-      yaxis: { title: 'Amount (' + data.currency + ')' },
+      // One row per item, most-recent at the top. The y axis carries no
+      // semantic information beyond row identity, so hide ticks/grid; color
+      // identifies the category and tooltip carries the per-item detail.
+      yaxis: { autorange: 'reversed', showticklabels: false,
+               showgrid: false, zeroline: false },
+      height: Math.max(400, items.length * 22 + 80),
+      showlegend: true,
     }), STATIC_CONFIG);
     const div = document.getElementById('chart-timeline');
     div.on('plotly_click', evt => {
