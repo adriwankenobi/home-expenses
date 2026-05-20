@@ -48,6 +48,15 @@ def _serialize_model(model: ReportModel) -> str:
                 "category": it.category,
                 "invoice_path": (it.invoice.source_path if it.invoice is not None else None),
                 "invoice_id": (it.invoice.invoice_id if it.invoice is not None else None),
+                "invoice_date": (
+                    it.invoice.invoice_date.isoformat() if it.invoice is not None else None
+                ),
+                "period_start": (
+                    it.invoice.period.start.isoformat() if it.invoice is not None else None
+                ),
+                "period_end": (
+                    it.invoice.period.end.isoformat() if it.invoice is not None else None
+                ),
             }
             for it in sorted_items
         ],

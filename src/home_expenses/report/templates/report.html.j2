@@ -12,7 +12,7 @@
   .year-tab.active { background: #094771; border-color: #007acc; color: #fff; }
   .section { margin: 24px 0; padding: 16px; background: #1f1f1f; border-radius: 8px; border: 1px solid #333; }
   .alert { padding: 8px 12px; background: #3a1e1e; border-left: 4px solid #f48771; margin: 6px 0; border-radius: 4px; }
-  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
   .kpi { background: #2d2d2d; padding: 16px; border-radius: 6px; text-align: center; }
   .kpi .big { font-size: 24px; font-weight: bold; color: #4ec9b0; }
   .kpi .label { font-size: 11px; color: #aaa; text-transform: uppercase; }
@@ -22,6 +22,16 @@
   .item-table tr.highlighted { background: #094771; }
   a { color: #4ec9b0; text-decoration: none; }
   .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  /* Static charts: default cursor everywhere; only flip to pointer when the
+     hover handler marks a data point under the cursor. */
+  #chart-spent, #chart-spent *,
+  #chart-consumed, #chart-consumed *,
+  #chart-timeline, #chart-timeline * { cursor: default; }
+  #chart-spent.cursor-pointer, #chart-spent.cursor-pointer *,
+  #chart-consumed.cursor-pointer, #chart-consumed.cursor-pointer *,
+  #chart-timeline.cursor-pointer, #chart-timeline.cursor-pointer * {
+    cursor: pointer !important;
+  }
 </style>
 </head>
 <body>
@@ -55,13 +65,19 @@
     <div class="kpi"><div class="big" id="kpi-total">—</div><div class="label">Total ({{ model.currency }})</div></div>
     <div class="kpi"><div class="big" id="kpi-txns">—</div><div class="label">Transactions</div></div>
     <div class="kpi"><div class="big" id="kpi-cats">—</div><div class="label">Categories</div></div>
+    <div class="kpi"><div class="big" id="kpi-lag">—</div><div class="label">Avg lag (days)</div></div>
     <div class="kpi"><div class="big" id="kpi-alerts">{{ model.alerts | length }}</div><div class="label">Open alerts</div></div>
   </div>
 </div>
 
 <div class="section">
-  <h2>Monthly spend</h2>
-  <div id="chart-monthly"></div>
+  <h2>Monthly spend <small style="color:#888;font-weight:normal">(when the bank charged)</small></h2>
+  <div id="chart-spent"></div>
+</div>
+
+<div class="section">
+  <h2>Monthly consumption <small style="color:#888;font-weight:normal">(when the service was used; periods spanning &gt;1 month split proportionally by day count)</small></h2>
+  <div id="chart-consumed"></div>
 </div>
 
 <div class="chart-row">
@@ -85,13 +101,15 @@
   <table class="item-table" id="items">
     <thead>
       <tr>
-        <th>Date</th><th>Description</th><th>Amount</th>
+        <th>Period</th><th>Invoice date</th><th>Payment date</th><th>Description</th><th>Amount</th>
         <th>Category</th><th>Invoice</th>
       </tr>
     </thead>
     <tbody id="items-body">
       {% for it in model.items|sort(attribute='transaction.date', reverse=True) %}
       <tr id="item-{{ loop.index0 }}" data-item-id="{{ loop.index0 }}">
+        <td>{% if it.invoice %}{{ it.invoice.period.start }} → {{ it.invoice.period.end }}{% endif %}</td>
+        <td>{% if it.invoice %}{{ it.invoice.invoice_date }}{% endif %}</td>
         <td>{{ it.transaction.date }}</td>
         <td>{{ it.transaction.description }}</td>
         <td>{{ it.transaction.amount }}</td>
@@ -144,11 +162,48 @@
   }
 
   function attachPointerCursor(div) {
-    div.on('plotly_hover', () => { div.style.cursor = 'pointer'; });
-    div.on('plotly_unhover', () => { div.style.cursor = ''; });
+    // Use a CSS class with !important to override Plotly's internal cursor
+    // (its draglayer sets crosshair/default depending on dragmode).
+    div.on('plotly_hover', () => div.classList.add('cursor-pointer'));
+    div.on('plotly_unhover', () => div.classList.remove('cursor-pointer'));
   }
 
+  // Plotly config / layout shared by both interactive charts: no zoom, no
+  // pan, no double-click reset — just hover + click + the click handlers
+  // attached per chart.
+  const STATIC_CONFIG = { displayModeBar: false, scrollZoom: false, doubleClick: false };
+  const STATIC_LAYOUT_BASE = {
+    dragmode: false,
+    paper_bgcolor: '#1f1f1f',
+    plot_bgcolor: '#1f1f1f',
+    font: { color: '#ddd' },
+    margin: { t: 20 },
+  };
+
   const colorMap = buildCategoryColors(data.items);
+
+  // ---- date helpers ----
+  function days(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 86400000); }
+  function daysInclusive(a, b) { return days(a, b) + 1; }
+  function splitPeriodAcrossMonths(start, end) {
+    // Returns { 'YYYY-MM': fraction } summing to 1 across the months the
+    // period covers, weighted by day count in each month.
+    const out = {};
+    const total = daysInclusive(start, end);
+    let cur = new Date(start + 'T00:00:00');
+    const endD = new Date(end + 'T00:00:00');
+    while (cur <= endD) {
+      const y = cur.getFullYear();
+      const m = cur.getMonth();
+      const monthEnd = new Date(y, m + 1, 0);
+      const sliceEnd = monthEnd <= endD ? monthEnd : endD;
+      const key = String(y) + '-' + String(m + 1).padStart(2, '0');
+      const sliceDays = Math.round((sliceEnd - cur) / 86400000) + 1;
+      out[key] = (out[key] || 0) + sliceDays / total;
+      cur = new Date(y, m + 1, 1);
+    }
+    return out;
+  }
 
   function render() {
     const items = filtered();
@@ -157,10 +212,20 @@
     document.getElementById('kpi-txns').textContent = items.length;
     document.getElementById('kpi-cats').textContent =
       new Set(items.map(it => it.category)).size;
+    document.getElementById('kpi-lag').textContent = computeAvgLag(items);
     renderItemsTable(items);
-    renderMonthly(items);
+    renderSpent(items);
+    renderConsumed(items);
     renderDonut(items);
     renderTimeline(items);
+  }
+
+  function computeAvgLag(items) {
+    const lags = items
+      .filter(it => it.period_end && it.date)
+      .map(it => days(it.period_end, it.date));
+    if (lags.length === 0) return '—';
+    return Math.round(lags.reduce((s, n) => s + n, 0) / lags.length);
   }
 
   function renderItemsTable(items) {
@@ -172,7 +237,15 @@
       const tr = document.createElement('tr');
       tr.id = 'item-' + idx;
       tr.dataset.itemId = idx;
+      let periodCell = '';
+      if (it.period_start && it.period_end) {
+        const d = daysInclusive(it.period_start, it.period_end);
+        periodCell = it.period_start + ' → ' + it.period_end +
+          ' (' + d + ' day' + (d === 1 ? '' : 's') + ')';
+      }
       tr.innerHTML =
+        '<td>' + periodCell + '</td>' +
+        '<td>' + (it.invoice_date || '') + '</td>' +
         '<td>' + it.date + '</td>' +
         '<td>' + escapeHtml(it.description) + '</td>' +
         '<td>' + it.amount + '</td>' +
@@ -184,50 +257,56 @@
     });
   }
 
-  function renderMonthly(items) {
-    // byMonthCat[ym][cat] = { total, entries: [{idx, date, amount, description}] }
-    const byMonthCat = {};
-    items.forEach((it, i) => {
-      const ym = it.date.slice(0, 7);
-      byMonthCat[ym] = byMonthCat[ym] || {};
-      if (!byMonthCat[ym][it.category]) {
-        byMonthCat[ym][it.category] = { total: 0, entries: [] };
+  // Builds a stacked-bar monthly chart, aggregating amounts under a
+  // category-supplied attribution rule. `attribute(item)` returns a map of
+  // 'YYYY-MM' → amount (allowing one item to contribute to many months).
+  function renderMonthlyChart(divId, items, attribute) {
+    const monthSet = new Set();
+    const byCat = {};
+    items.forEach(it => {
+      const contrib = attribute(it);
+      for (const m in contrib) {
+        monthSet.add(m);
+        byCat[it.category] = byCat[it.category] || {};
+        byCat[it.category][m] = (byCat[it.category][m] || 0) + contrib[m];
       }
-      const cell = byMonthCat[ym][it.category];
-      cell.total += parseFloat(it.amount);
-      cell.entries.push({ idx: i, date: it.date, amount: it.amount });
     });
-    const months = Object.keys(byMonthCat).sort();
-    const cats = Array.from(new Set(items.map(it => it.category))).sort();
+    const months = Array.from(monthSet).sort();
+    const cats = Object.keys(byCat).sort();
     const traces = cats.map(cat => ({
       x: months,
-      y: months.map(m => (byMonthCat[m][cat] && byMonthCat[m][cat].total) || 0),
+      y: months.map(m => byCat[cat][m] || 0),
       name: cat,
       type: 'bar',
       marker: { color: colorMap[cat] },
-      text: months.map(m => {
-        const cell = byMonthCat[m] && byMonthCat[m][cat];
-        if (!cell || cell.entries.length === 0) return '';
-        return cell.entries.map(e => e.date + ' &middot; ' + e.amount).join('<br>');
-      }),
-      customdata: months.map(m => {
-        const cell = byMonthCat[m] && byMonthCat[m][cat];
-        return cell ? cell.entries.map(e => e.idx) : [];
-      }),
-      hovertemplate: '<b>%{fullData.name}</b><br>Total: %{y}<br>%{text}<extra></extra>',
+      hovertemplate: '<b>' + cat + '</b><br>%{x}<br>%{y:.2f}<extra></extra>',
     }));
-    Plotly.newPlot('chart-monthly', traces, {
+    Plotly.newPlot(divId, traces, Object.assign({}, STATIC_LAYOUT_BASE, {
       barmode: 'stack',
-      paper_bgcolor: '#1f1f1f',
-      plot_bgcolor: '#1f1f1f',
-      font: { color: '#ddd' },
-      margin: { t: 20 },
-    }, { displayModeBar: false });
-    const div = document.getElementById('chart-monthly');
-    div.on('plotly_click', evt => {
-      highlightItems(evt.points[0].customdata || []);
-    });
+    }), STATIC_CONFIG);
+    const div = document.getElementById(divId);
     attachPointerCursor(div);
+  }
+
+  function renderSpent(items) {
+    // Spent: amount lands on the month of the bank charge.
+    renderMonthlyChart('chart-spent', items, it => {
+      const m = it.date.slice(0, 7);
+      return { [m]: parseFloat(it.amount) };
+    });
+  }
+
+  function renderConsumed(items) {
+    // Consumption: only items with a period contribute; amount is split
+    // proportionally by day count across the months the period covers.
+    renderMonthlyChart('chart-consumed', items, it => {
+      if (!it.period_start || !it.period_end) return {};
+      const split = splitPeriodAcrossMonths(it.period_start, it.period_end);
+      const amount = parseFloat(it.amount);
+      const out = {};
+      for (const m in split) out[m] = amount * split[m];
+      return out;
+    });
   }
 
   function renderDonut(items) {
@@ -247,23 +326,86 @@
   }
 
   function renderTimeline(items) {
-    const trace = {
-      x: items.map(it => it.date),
-      y: items.map(it => parseFloat(it.amount)),
-      mode: 'markers',
-      type: 'scatter',
-      text: items.map(it => it.description),
-      customdata: items.map((_, i) => i),
-      marker: {
-        color: items.map(it => colorMap[it.category]),
-        size: 9,
-      },
-      hovertemplate: '%{x}<br>%{text}<br>%{y}<extra></extra>',
-    };
-    Plotly.newPlot('chart-timeline', [trace], { paper_bgcolor: '#1f1f1f', plot_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 } }, { displayModeBar: false });
+    // Each item is drawn at y=amount as a horizontal "lifecycle":
+    //   - thick teal bar from period_start to period_end (consumption window)
+    //   - thin gray solid line from period_end to invoice_date
+    //   - thin orange dotted line from invoice_date to payment_date
+    //   - yellow diamond marker at invoice_date
+    //   - orange large dot at payment_date (the ONLY hoverable element)
+    // The payment dot's tooltip carries the full lifecycle info.
+    const periodLineX = [], periodLineY = [];
+    const lagLineX = [], lagLineY = [];
+    const waitLineX = [], waitLineY = [];
+    const invX = [], invY = [];
+    const payX = [], payY = [], payText = [], payCustom = [];
+
+    items.forEach((it, i) => {
+      const y = parseFloat(it.amount);
+      if (it.period_start && it.period_end) {
+        periodLineX.push(it.period_start, it.period_end, null);
+        periodLineY.push(y, y, null);
+      }
+      if (it.period_end && it.invoice_date) {
+        lagLineX.push(it.period_end, it.invoice_date, null);
+        lagLineY.push(y, y, null);
+      }
+      if (it.invoice_date) {
+        waitLineX.push(it.invoice_date, it.date, null);
+        waitLineY.push(y, y, null);
+        invX.push(it.invoice_date);
+        invY.push(y);
+      }
+      payX.push(it.date);
+      payY.push(y);
+      payCustom.push(i);
+      const lag = it.period_end ? days(it.period_end, it.date) : null;
+      const periodDays = (it.period_start && it.period_end)
+        ? daysInclusive(it.period_start, it.period_end) : null;
+      payText.push(
+        '<b>' + escapeHtml(it.description) + '</b><br>' +
+        (it.period_start
+          ? 'Period: ' + it.period_start + ' → ' + it.period_end +
+            ' (' + periodDays + ' day' + (periodDays === 1 ? '' : 's') + ')<br>'
+          : '') +
+        (it.invoice_date ? 'Invoice: ' + it.invoice_date + '<br>' : '') +
+        'Payment: ' + it.date + '<br>' +
+        it.amount +
+        (lag !== null ? '<br>Lag (period→payment): ' + lag + ' days' : '')
+      );
+    });
+
+    const traces = [
+      { x: periodLineX, y: periodLineY, mode: 'lines+markers', type: 'scatter',
+        line: { color: '#4ec9b0', width: 9 },
+        marker: { color: '#4ec9b0', size: 6, symbol: 'line-ns-open' },
+        hoverinfo: 'skip', showlegend: false, name: '' },
+      { x: lagLineX, y: lagLineY, mode: 'lines', type: 'scatter',
+        line: { color: '#888', width: 2 },
+        hoverinfo: 'skip', showlegend: false, name: '' },
+      { x: waitLineX, y: waitLineY, mode: 'lines', type: 'scatter',
+        line: { color: '#f48771', width: 2, dash: 'dot' },
+        hoverinfo: 'skip', showlegend: false, name: '' },
+      { x: invX, y: invY, mode: 'markers', type: 'scatter',
+        marker: { color: '#dcdcaa', size: 10, symbol: 'diamond' },
+        hoverinfo: 'skip', showlegend: false, name: '' },
+      // The single hoverable trace.
+      { x: payX, y: payY, text: payText, customdata: payCustom,
+        mode: 'markers', type: 'scatter',
+        marker: { color: '#f48771', size: 13 },
+        hovertemplate: '%{text}<extra></extra>',
+        hoverlabel: { bgcolor: '#3a1e1e', bordercolor: '#f48771',
+                      font: { color: '#ffe6dc' } },
+        showlegend: false, name: '' },
+    ];
+
+    Plotly.newPlot('chart-timeline', traces, Object.assign({}, STATIC_LAYOUT_BASE, {
+      hovermode: 'closest',
+      yaxis: { title: 'Amount (' + data.currency + ')' },
+    }), STATIC_CONFIG);
     const div = document.getElementById('chart-timeline');
     div.on('plotly_click', evt => {
-      highlightItems([evt.points[0].customdata]);
+      const cd = evt.points[0].customdata;
+      if (cd !== null && cd !== undefined) highlightItems([cd]);
     });
     attachPointerCursor(div);
   }
