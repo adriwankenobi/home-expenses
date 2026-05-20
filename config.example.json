@@ -11,7 +11,8 @@
       "invoice_parser": "pepeenergy",
       "recurrence": "monthly",
       "patterns": ["RECIBO PEPE ENERGY"],
-      "match_window_days": 15
+      "match_window_days": 15,
+      "start_date": "2024-01"
     },
     "community_fee": {
       "patterns": ["RECIBO CCPP LUIS AULA 28"],

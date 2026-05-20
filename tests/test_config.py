@@ -146,3 +146,64 @@ def test_manual_mappings_must_be_object(tmp_path: Path) -> None:
     p = _write_config(tmp_path, payload)
     with pytest.raises(ConfigError, match="manual_mappings must be an object"):
         load_config(p)
+
+
+def test_start_date_monthly_parses_yyyy_mm(tmp_path: Path) -> None:
+    from datetime import date as _date
+
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["electricity"]["start_date"] = "2024-03"
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    assert cfg.categories["electricity"].start_date == _date(2024, 3, 1)
+
+
+def test_start_date_monthly_rejects_day_format(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["electricity"]["start_date"] = "2024-03-15"
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="monthly recurrence"):
+        load_config(p)
+
+
+def test_start_date_yearly_parses_yyyy(tmp_path: Path) -> None:
+    from datetime import date as _date
+
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["electricity"]["recurrence"] = "yearly"
+    payload["categories"]["electricity"]["start_date"] = "2024"
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    assert cfg.categories["electricity"].start_date == _date(2024, 1, 1)
+
+
+def test_start_date_quarterly_parses_yyyy_qn(tmp_path: Path) -> None:
+    from datetime import date as _date
+
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["electricity"]["recurrence"] = "quarterly"
+    payload["categories"]["electricity"]["start_date"] = "2024-Q3"
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    # Q3 starts in July.
+    assert cfg.categories["electricity"].start_date == _date(2024, 7, 1)
+
+
+def test_start_date_bimonthly_rejects_even_month(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["electricity"]["recurrence"] = "bimonthly"
+    payload["categories"]["electricity"]["start_date"] = "2024-04"
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="bimonthly"):
+        load_config(p)
+
+
+def test_start_date_none_recurrence_parses_yyyy_mm_dd(tmp_path: Path) -> None:
+    from datetime import date as _date
+
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["electricity"]["recurrence"] = "none"
+    payload["categories"]["electricity"]["start_date"] = "2024-03-15"
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    assert cfg.categories["electricity"].start_date == _date(2024, 3, 15)

@@ -36,6 +36,8 @@ def check_recurrence(
             statement_range[1],
             today,
         ):
+            if cat.start_date is not None and period.end < cat.start_date:
+                continue
             count = sum(
                 1
                 for it in items

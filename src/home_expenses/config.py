@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -23,6 +25,61 @@ def _require_dict(value: Any, label: str, path: Path) -> dict[str, Any]:
     return value
 
 
+_BIMONTHLY_FIRST_MONTHS: frozenset[int] = frozenset((1, 3, 5, 7, 9, 11))
+_QUARTERLY_RE = re.compile(r"^(\d{4})-Q([1-4])$")
+
+
+def _parse_start_date(raw: str, recurrence: str, path: Path, name: str) -> date:
+    """Parse start_date in the granularity that matches the recurrence kind."""
+    if recurrence == "monthly":
+        try:
+            return datetime.strptime(raw, "%Y-%m").date()
+        except (TypeError, ValueError) as e:
+            raise ConfigError(
+                f"{path}: category '{name}' start_date for monthly recurrence "
+                f"must be YYYY-MM, got {raw!r}"
+            ) from e
+    if recurrence == "bimonthly":
+        try:
+            d = datetime.strptime(raw, "%Y-%m").date()
+        except (TypeError, ValueError) as e:
+            raise ConfigError(
+                f"{path}: category '{name}' start_date for bimonthly recurrence "
+                f"must be YYYY-MM (first month of pair), got {raw!r}"
+            ) from e
+        if d.month not in _BIMONTHLY_FIRST_MONTHS:
+            raise ConfigError(
+                f"{path}: category '{name}' bimonthly start_date month must be "
+                f"one of Jan/Mar/May/Jul/Sep/Nov, got {raw!r}"
+            )
+        return d
+    if recurrence == "quarterly":
+        m = _QUARTERLY_RE.match(raw) if isinstance(raw, str) else None
+        if m is None:
+            raise ConfigError(
+                f"{path}: category '{name}' start_date for quarterly recurrence "
+                f"must be YYYY-Q1..YYYY-Q4, got {raw!r}"
+            )
+        year = int(m.group(1))
+        quarter = int(m.group(2))
+        return date(year, (quarter - 1) * 3 + 1, 1)
+    if recurrence == "yearly":
+        if not isinstance(raw, str) or not raw.isdigit() or len(raw) != 4:
+            raise ConfigError(
+                f"{path}: category '{name}' start_date for yearly recurrence "
+                f"must be YYYY, got {raw!r}"
+            )
+        return date(int(raw), 1, 1)
+    # recurrence == "none": day-precision date
+    try:
+        return date.fromisoformat(raw)
+    except (TypeError, ValueError) as e:
+        raise ConfigError(
+            f"{path}: category '{name}' start_date for non-recurring category "
+            f"must be YYYY-MM-DD, got {raw!r}"
+        ) from e
+
+
 @dataclass(frozen=True)
 class Category:
     name: str
@@ -31,6 +88,7 @@ class Category:
     invoice_parser: str | None = None
     patterns: tuple[str, ...] = ()
     match_window_days: int | None = None
+    start_date: date | None = None  # No "missing" alerts before this date.
 
 
 @dataclass(frozen=True)
@@ -105,6 +163,10 @@ def load_config(path: Path) -> Config:
                     f"'{pattern_owners[p]}' and '{name}'"
                 )
             pattern_owners[p] = name
+        start_date_raw = c.get("start_date")
+        start_date_val: date | None = None
+        if start_date_raw is not None:
+            start_date_val = _parse_start_date(start_date_raw, c["recurrence"], path, name)
         categories[name] = Category(
             name=name,
             recurrence=c["recurrence"],
@@ -112,6 +174,7 @@ def load_config(path: Path) -> Config:
             invoice_parser=c.get("invoice_parser"),
             patterns=patterns,
             match_window_days=c.get("match_window_days"),
+            start_date=start_date_val,
         )
 
     manual_mappings: dict[str, str] = dict(

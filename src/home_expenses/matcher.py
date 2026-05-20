@@ -51,7 +51,11 @@ def match(
 
         items.append(Item(transaction=txn, category=pattern_cat, invoice=None))
         cat_def = config.categories.get(pattern_cat)
-        if cat_def is not None and cat_def.invoice_folder is not None:
+        if (
+            cat_def is not None
+            and cat_def.invoice_folder is not None
+            and (cat_def.start_date is None or txn.date >= cat_def.start_date)
+        ):
             alerts.append(
                 Alert(
                     kind=AlertKind.EXPENSE_MISSING_INVOICE,

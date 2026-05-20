@@ -223,3 +223,50 @@ def test_per_category_window_override() -> None:
     assert result.items[0].invoice is None
     # The out-of-window invoice is unconsumed and must surface as an orphan.
     assert any(a.kind is AlertKind.ORPHAN_INVOICE for a in result.alerts)
+
+
+def test_start_date_suppresses_expense_missing_invoice() -> None:
+    # A pattern-matched transaction before the category's start_date should
+    # NOT trigger expense_missing_invoice (the user wasn't yet contracted).
+    txn = make_transaction(
+        date=date(2023, 1, 15),
+        description="RECIBO PEPE ENERGY",
+        amount=Decimal("11.11"),
+    )
+    cfg = _config(
+        categories={
+            "electricity": Category(
+                name="electricity",
+                recurrence="monthly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("RECIBO PEPE ENERGY",),
+                start_date=date(2024, 1, 1),
+            )
+        }
+    )
+    result = match([txn], {}, cfg)
+    assert len(result.items) == 1
+    assert all(a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
+
+
+def test_expense_missing_invoice_fires_on_or_after_start_date() -> None:
+    txn = make_transaction(
+        date=date(2024, 1, 1),
+        description="RECIBO PEPE ENERGY",
+        amount=Decimal("11.11"),
+    )
+    cfg = _config(
+        categories={
+            "electricity": Category(
+                name="electricity",
+                recurrence="monthly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("RECIBO PEPE ENERGY",),
+                start_date=date(2024, 1, 1),
+            )
+        }
+    )
+    result = match([txn], {}, cfg)
+    assert any(a.kind is AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)

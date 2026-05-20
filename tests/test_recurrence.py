@@ -108,3 +108,33 @@ def test_yearly() -> None:
     )
     periods = sorted(a.payload["period"] for a in alerts)
     assert periods == ["2023", "2025"]
+
+
+def test_start_date_suppresses_alerts_before_it() -> None:
+    # Statement range covers Jan-Apr 2026. Category started in March, so
+    # Jan and Feb must NOT alert; March alerts (no item in March).
+    cat = Category(
+        name="elec",
+        recurrence="monthly",
+        start_date=date(2026, 3, 1),
+    )
+    alerts = check_recurrence(
+        items=[],
+        categories={"elec": cat},
+        statement_range=(date(2026, 1, 1), date(2026, 4, 30)),
+        today=date(2026, 5, 1),
+    )
+    periods = sorted(a.payload["period"] for a in alerts)
+    assert periods == ["2026-03", "2026-04"]
+
+
+def test_no_start_date_means_no_filter() -> None:
+    cat = Category(name="elec", recurrence="monthly")
+    alerts = check_recurrence(
+        items=[],
+        categories={"elec": cat},
+        statement_range=(date(2026, 1, 1), date(2026, 2, 28)),
+        today=date(2026, 3, 1),
+    )
+    periods = sorted(a.payload["period"] for a in alerts)
+    assert periods == ["2026-01", "2026-02"]
