@@ -28,8 +28,7 @@ def make_invoice(
     content_hash: str = "0" * 64,
     parser: str = "pepeenergy",
     amount: Decimal = Decimal("10.00"),
-    invoice_id: str = "TEST-001",
-    invoice_date: date = date(2026, 5, 10),
+    invoice_date: date | None = date(2026, 5, 10),
     period_start: date = date(2026, 4, 1),
     period_end: date = date(2026, 4, 30),
 ) -> Invoice:
@@ -38,7 +37,6 @@ def make_invoice(
         content_hash=content_hash,
         parser=parser,
         amount=amount,
-        invoice_id=invoice_id,
         invoice_date=invoice_date,
         period=InvoicePeriod(start=period_start, end=period_end),
     )

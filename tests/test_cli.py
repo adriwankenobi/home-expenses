@@ -27,10 +27,10 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path]:
                 "invoice_folder": str(invoices_dir),
                 "invoice_parser": "pepeenergy",
                 "recurrence": "monthly",
-                "patterns": ["RECIBO PEPE ENERGY"],
+                "patterns": ["PEPE ENERGY INVOICE"],
             },
             "bank_fees": {
-                "patterns": ["COMISION MANTENIM. CTA."],
+                "patterns": ["ACCOUNT MAINTENANCE FEE"],
                 "recurrence": "yearly",
             },
         },

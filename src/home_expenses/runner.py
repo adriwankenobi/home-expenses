@@ -10,7 +10,7 @@ from pathlib import Path
 from home_expenses.cache import ExtractionCache, file_sha256
 from home_expenses.config import Config
 from home_expenses.matcher import match
-from home_expenses.models import Alert, BankStatementFile, Invoice, ReportCategory
+from home_expenses.models import Alert, BankStatementFile, Invoice, Item, ReportCategory
 from home_expenses.parsers.bank_statement import parse_bank_statement
 from home_expenses.parsers.invoices import get_spec
 from home_expenses.parsers.invoices.pepeenergy import InvoiceParseError
@@ -58,8 +58,13 @@ def run_report(config: Config, output_path: Path, today: date) -> RunSummary:
     )
 
     all_alerts = tuple(result.alerts) + tuple(recurrence_alerts)
+    # Hide pattern-matched payments whose category expects an invoice but
+    # doesn't have one. They surface in the alerts banner as
+    # EXPENSE_MISSING_INVOICE; including them in charts/items would
+    # double-count or otherwise muddy the picture.
+    visible_items = tuple(it for it in result.items if _has_expected_invoice(it, config))
     model = build_report_model(
-        items=result.items,
+        items=visible_items,
         alerts=all_alerts,
         currency=config.currency,
         generated_at=today,
@@ -86,6 +91,22 @@ def run_report(config: Config, output_path: Path, today: date) -> RunSummary:
         alerts=len(model.alerts),
         output_path=output_path,
     )
+
+
+def _has_expected_invoice(item: Item, config: Config) -> bool:
+    """True if the item is OK to display in charts/items.
+
+    Any item without an attached invoice in a category that has an
+    invoice_folder configured is hidden — including payments dated before
+    the category's start_date. (The matcher itself only emits
+    EXPENSE_MISSING_INVOICE for on-or-after start_date, but the user
+    doesn't want pre-start_date pattern matches cluttering the report
+    either.)
+    """
+    if item.invoice is not None:
+        return True
+    cat = config.categories.get(item.category)
+    return cat is None or cat.invoice_folder is None
 
 
 def _load_statements(config: Config, cache: ExtractionCache) -> tuple[list[BankStatementFile], int]:

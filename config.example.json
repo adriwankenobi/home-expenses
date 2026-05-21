@@ -21,6 +21,12 @@
       "patterns": ["PEPE MOBILE INVOICE"],
       "match_window_days": 15
     },
+    "IBI": {
+      "invoice_folder": "/path/to/invoices/ibi",
+      "invoice_parser": "ibi",
+      "recurrence": "quarterly",
+      "patterns": ["IBI INVOICE"]
+    },
     "monthly": {
       "patterns": ["MONTHLY INVOICE"],
       "recurrence": "monthly"
@@ -49,7 +55,7 @@
     }
   },
   "manual_mappings": {
-    "UNIQUE ANNUAL CHARGE 2024-09-15": {
+    "UNIQUE ANNUAL CHARGE": {
       "category": "sharedQuarterly1",
       "recurrence": "yearly",
       "period_contains_payment": true

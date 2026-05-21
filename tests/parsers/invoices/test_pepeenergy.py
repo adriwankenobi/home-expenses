@@ -35,11 +35,6 @@ def test_extracts_amount_above_total_a_pagar_label() -> None:
     assert inv.amount == Decimal("1.11")
 
 
-def test_extracts_invoice_id_from_line_after_label() -> None:
-    inv = parse_text(_parseable_template(), source_path="/tmp/x.pdf", content_hash="h")
-    assert inv.invoice_id == "XXXXXXXXXXXX"
-
-
 def test_extracts_invoice_date_from_fecha_emision() -> None:
     inv = parse_text(_parseable_template(), source_path="/tmp/x.pdf", content_hash="h")
     assert inv.invoice_date == date(2024, 7, 15)
@@ -56,8 +51,6 @@ def test_extracts_day_range_period() -> None:
         "Factura de la luz de Juan Ejemplo\n"
         "16 al 30 de abril de 2024 Calle Falsa\n"
         "Fecha emisión: 02/05/24\n"
-        "Número de factura\n"
-        "ABC123 Resumen\n"
         "5,00 €\n"
         "Total a pagar\n"
     )
@@ -67,13 +60,13 @@ def test_extracts_day_range_period() -> None:
 
 
 def test_missing_total_a_pagar_raises() -> None:
-    text = "Fecha emisión: 02/05/24\nNúmero de factura\nABC\n"
+    text = "Fecha emisión: 02/05/24\n"
     with pytest.raises(InvoiceParseError, match="Total a pagar"):
         parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
 
 
 def test_missing_period_raises() -> None:
-    text = "Fecha emisión: 02/05/24\nNúmero de factura\nABC Resumen\n5,00 €\nTotal a pagar\n"
+    text = "Fecha emisión: 02/05/24\n5,00 €\nTotal a pagar\n"
     with pytest.raises(InvoiceParseError, match="period"):
         parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
 
@@ -93,8 +86,6 @@ def test_extracts_amount_with_thousands_separator() -> None:
         "Factura de la luz de Juan Ejemplo\n"
         "mayo 2024 Calle Falsa\n"
         "Fecha emisión: 02/05/24\n"
-        "Número de factura\n"
-        "ABC123 Resumen\n"
         "1.234,56 €\n"
         "Total a pagar\n"
     )
@@ -107,8 +98,6 @@ def test_unrecognized_period_format_raises() -> None:
         "Factura de la luz de Juan Ejemplo\n"
         "garbled period text\n"
         "Fecha emisión: 02/05/24\n"
-        "Número de factura\n"
-        "ABC Resumen\n"
         "1,00 €\n"
         "Total a pagar\n"
     )

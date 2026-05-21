@@ -49,13 +49,13 @@ class ExtractionCache:
         data = self._invoices.get(content_hash)
         if data is None:
             return None
+        raw_inv_date = data.get("invoice_date")
         return Invoice(
             source_path=data["source_path"],
             content_hash=content_hash,
             parser=data["parser"],
             amount=Decimal(data["amount"]),
-            invoice_id=data["invoice_id"],
-            invoice_date=date.fromisoformat(data["invoice_date"]),
+            invoice_date=date.fromisoformat(raw_inv_date) if raw_inv_date else None,
             period=InvoicePeriod(
                 start=date.fromisoformat(data["period_start"]),
                 end=date.fromisoformat(data["period_end"]),
@@ -67,8 +67,9 @@ class ExtractionCache:
             "source_path": invoice.source_path,
             "parser": invoice.parser,
             "amount": str(invoice.amount),
-            "invoice_id": invoice.invoice_id,
-            "invoice_date": invoice.invoice_date.isoformat(),
+            "invoice_date": (
+                invoice.invoice_date.isoformat() if invoice.invoice_date is not None else None
+            ),
             "period_start": invoice.period.start.isoformat(),
             "period_end": invoice.period.end.isoformat(),
             "extracted_at": datetime.now(UTC).isoformat(),

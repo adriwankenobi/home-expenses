@@ -33,7 +33,6 @@ def test_invoice_cache_roundtrip(tmp_path: Path) -> None:
         content_hash="abc",
         parser="pepeenergy",
         amount=Decimal("11.11"),
-        invoice_id="F-001",
         invoice_date=date(2024, 7, 15),
         period=InvoicePeriod(start=date(2024, 5, 1), end=date(2024, 5, 31)),
     )
@@ -83,7 +82,6 @@ def test_clear_removes_files(tmp_path: Path) -> None:
             content_hash="abc",
             parser="pepeenergy",
             amount=Decimal("1"),
-            invoice_id="X",
             invoice_date=date(2024, 1, 1),
             period=InvoicePeriod(start=date(2024, 1, 1), end=date(2024, 1, 31)),
         )
@@ -103,7 +101,6 @@ def test_cache_dir_is_created_if_missing(tmp_path: Path) -> None:
             content_hash="abc",
             parser="pepeenergy",
             amount=Decimal("1"),
-            invoice_id="X",
             invoice_date=date(2024, 1, 1),
             period=InvoicePeriod(start=date(2024, 1, 1), end=date(2024, 1, 31)),
         )

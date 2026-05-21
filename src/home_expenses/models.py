@@ -34,8 +34,7 @@ class Invoice:
     content_hash: str
     parser: str
     amount: Decimal
-    invoice_id: str
-    invoice_date: date
+    invoice_date: date | None
     period: InvoicePeriod
 
 

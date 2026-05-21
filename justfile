@@ -20,6 +20,10 @@ test:
 report:
     uv run home-expenses report
 
+# Wipe the extraction cache (forces every invoice/statement to re-parse).
+clear-cache:
+    uv run home-expenses cache clear
+
 # Extract page-1 text from an invoice PDF (sanitize before pasting).
 extract-invoice:
     uv run scripts/extract_invoice_text.py

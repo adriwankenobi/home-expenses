@@ -25,7 +25,6 @@ def test_invoice_dataclass_fields() -> None:
         content_hash="abc",
         parser="pepeenergy",
         amount=Decimal("11.11"),
-        invoice_id="F-001",
         invoice_date=date(2024, 7, 15),
         period=InvoicePeriod(start=date(2024, 5, 1), end=date(2024, 5, 31)),
     )
@@ -36,7 +35,7 @@ def test_invoice_dataclass_fields() -> None:
 def test_transaction_uses_positive_amount() -> None:
     txn = Transaction(
         date=date(2026, 5, 18),
-        description="RECIBO PEPE ENERGY",
+        description="PEPE ENERGY INVOICE",
         amount=Decimal("11.11"),
     )
     assert txn.amount > 0  # parser strips sign

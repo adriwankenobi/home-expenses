@@ -13,7 +13,7 @@ from tests.factories import make_invoice, make_item, make_transaction
 def test_renders_self_contained_html(tmp_path: Path) -> None:
     txn = make_transaction(
         date=date(2026, 5, 18),
-        description="RECIBO PEPE ENERGY",
+        description="PEPE ENERGY INVOICE",
         amount=Decimal("11.11"),
     )
     inv = make_invoice(
@@ -43,7 +43,7 @@ def test_renders_self_contained_html(tmp_path: Path) -> None:
     assert html.startswith("<!DOCTYPE")
     assert 'data-year="2026"' in html
     assert "plotly" in html.lower()
-    assert "RECIBO PEPE ENERGY" in html
+    assert "PEPE ENERGY INVOICE" in html
     assert "file:///Users/test/invoices/pepeenergy/f.pdf" in html
     assert "unclassified_expense" in html.lower() or "Unclassified" in html
 
@@ -157,7 +157,7 @@ def test_manual_mapping_overrides_appear_in_data_block(tmp_path: Path) -> None:
 def test_items_table_shows_long_dash_when_no_invoice(tmp_path: Path) -> None:
     txn = make_transaction(
         date=date(2026, 5, 18),
-        description="RECIBO TRIMESTRAL XYZ",
+        description="QUARTERLY INVOICE XYZ",
         amount=Decimal("33.33"),
     )
     items = [make_item(transaction=txn, category="water", invoice=None)]
@@ -179,4 +179,4 @@ def test_items_table_shows_long_dash_when_no_invoice(tmp_path: Path) -> None:
     render_report(model, out)
     html = out.read_text(encoding="utf-8")
     assert "&mdash;" in html or "—" in html
-    assert '"invoice_id":null' in html or '"invoice_id": null' in html
+    assert '"invoice_path":null' in html or '"invoice_path": null' in html

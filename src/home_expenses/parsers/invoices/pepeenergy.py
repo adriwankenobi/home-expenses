@@ -60,14 +60,12 @@ def parse_text(text: str, *, source_path: str, content_hash: str) -> Invoice:
     lines = text.splitlines()
     amount = _extract_amount(lines)
     invoice_date = _extract_invoice_date(text)
-    invoice_id = _extract_invoice_id(lines)
     period = _extract_period(lines)
     return Invoice(
         source_path=source_path,
         content_hash=content_hash,
         parser=PARSER_NAME,
         amount=amount,
-        invoice_id=invoice_id,
         invoice_date=invoice_date,
         period=period,
     )
@@ -93,15 +91,6 @@ def _extract_invoice_date(text: str) -> date:
         raise InvoiceParseError("Fecha emisión not found")
     dd, mm, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
     return date(2000 + yy, mm, dd)
-
-
-def _extract_invoice_id(lines: list[str]) -> str:
-    for i, line in enumerate(lines):
-        if line.strip() == "Número de factura":
-            if i + 1 >= len(lines):
-                raise InvoiceParseError("no line after 'Número de factura'")
-            return lines[i + 1].strip().split()[0]
-    raise InvoiceParseError("'Número de factura' label not found")
 
 
 def _extract_period(lines: list[str]) -> InvoicePeriod:

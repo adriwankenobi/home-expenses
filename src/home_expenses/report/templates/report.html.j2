@@ -298,7 +298,8 @@
   // precedence over the category-level defaults. Returns null if there's
   // nothing to display (no invoice and recurrence is 'none' or unknown).
   function displayInfoFor(it) {
-    if (it.period_start && it.period_end && it.invoice_date) {
+    // Real invoice period → use it verbatim. invoice_date may be null
+    if (it.period_start && it.period_end) {
       return {
         period_start: it.period_start,
         period_end: it.period_end,
@@ -341,7 +342,8 @@
   // consistent view (table, monthly consumption, timeline).
   function enrichItems(items) {
     return items.map(it => {
-      if (it.period_start && it.period_end && it.invoice_date) return it;
+      // Real period (with or without invoice_date) → keep as-is.
+      if (it.period_start && it.period_end) return it;
       const info = displayInfoFor(it);
       if (info === null) return it;
       return Object.assign({}, it, {
@@ -430,7 +432,7 @@
         periodStartCell = info.period_start;
         periodEndCell = info.period_end;
         periodLengthCell = d + ' day' + (d === 1 ? '' : 's');
-        invoiceDateCell = it.invoice_id ? info.invoice_date : '—';
+        invoiceDateCell = info.invoice_date ? info.invoice_date : '—';
       }
       tr.innerHTML =
         '<td>' + periodStartCell + '</td>' +
@@ -506,12 +508,25 @@
   function renderConsumed(items) {
     // Consumption: only items with a period contribute; amount is split
     // proportionally by day count across the months the period covers.
+    // Two clamps:
+    //   - future months are dropped (a yearly invoice paid in May only
+    //     shows Jan→May, not the un-consumed rest);
+    //   - if a specific year tab is active, months outside that year are
+    //     dropped too, so a payment dated this year whose period spilled
+    //     into the previous year doesn't bleed bars onto the previous
+    //     year on the current-year view.
+    const cutoff = data.generated_at.slice(0, 7);
+    const yearPrefix = activeYear === 'all' ? null : (activeYear + '-');
     renderMonthlyChart('chart-consumed', items, it => {
       if (!it.period_start || !it.period_end) return {};
       const split = splitPeriodAcrossMonths(it.period_start, it.period_end);
       const amount = parseFloat(it.amount);
       const out = {};
-      for (const m in split) out[m] = amount * split[m];
+      for (const m in split) {
+        if (m > cutoff) continue;
+        if (yearPrefix !== null && !m.startsWith(yearPrefix)) continue;
+        out[m] = amount * split[m];
+      }
       return out;
     });
   }
@@ -559,19 +574,35 @@
 
     // Build per-item y position from a date-asc sort, so the oldest item
     // sits at the top (y=0; the axis is reversed below to put 0 on top).
+    // Items that share (category, period_start, period_end) collapse onto
+    // the same row, so two invoices covering the same period render as one
+    // period bar with multiple payment markers.
     const sortKey = it => it.period_start || it.invoice_date || it.date || '';
+    const groupKey = it =>
+      it.category + '|' + (it.period_start || '') + '|' + (it.period_end || '');
     const yPos = new Array(items.length);
+    const groupY = {};
+    let nextY = 0;
     items.map((_, i) => i)
       .sort((a, b) => sortKey(items[a]).localeCompare(sortKey(items[b])))
-      .forEach((origIdx, pos) => { yPos[origIdx] = pos; });
+      .forEach((origIdx) => {
+        const k = groupKey(items[origIdx]);
+        if (groupY[k] === undefined) groupY[k] = nextY++;
+        yPos[origIdx] = groupY[k];
+      });
 
+    // Draw the period bar once per (category, period) group; later items
+    // sharing the same row contribute only their payment/invoice markers.
+    const drawnPeriod = new Set();
     items.forEach((it, i) => {
       const cat = it.category;
       const cd = catData[cat];
       const y = yPos[i];
-      if (it.period_start && it.period_end) {
+      const k = groupKey(it);
+      if (it.period_start && it.period_end && !drawnPeriod.has(k)) {
         cd.periodLineX.push(it.period_start, it.period_end, null);
         cd.periodLineY.push(y, y, null);
+        drawnPeriod.add(k);
       }
       if (it.period_end && it.invoice_date) {
         cd.lagLineX.push(it.period_end, it.invoice_date, null);
@@ -580,10 +611,8 @@
       if (it.invoice_date) {
         cd.waitLineX.push(it.invoice_date, it.date, null);
         cd.waitLineY.push(y, y, null);
-        if (it.invoice_id) {
-          cd.invX.push(it.invoice_date);
-          cd.invY.push(y);
-        }
+        cd.invX.push(it.invoice_date);
+        cd.invY.push(y);
       }
       cd.payX.push(it.date);
       cd.payY.push(y);
@@ -597,7 +626,7 @@
           ? 'Period: ' + it.period_start + ' → ' + it.period_end +
             ' (' + periodDays + ' day' + (periodDays === 1 ? '' : 's') + ')<br>'
           : '') +
-        (it.invoice_id ? 'Invoice: ' + it.invoice_date + '<br>' : '') +
+        (it.invoice_date ? 'Invoice: ' + it.invoice_date + '<br>' : '') +
         'Payment: ' + it.date + '<br>' +
         formatAmount(it.amount) +
         (lag !== null ? '<br>Lag: ' + lag + ' days' : '')

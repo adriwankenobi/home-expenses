@@ -24,7 +24,6 @@ def _parseable_template() -> str:
     """Return the template with placeholders substituted so it parses end-to-end."""
     return (
         _load_template()
-        .replace("Número de factura: XXXXXXX", "Número de factura: PP-2026-001")
         .replace("Período facturado: Month YYYY", "Período facturado: Enero 2026")
         .replace("Fecha de emisión: DD/MM/YYYY", "Fecha de emisión: 01/02/2026")
         .replace("Total factura X,XX €", "Total factura 0,27 €")
@@ -34,11 +33,6 @@ def _parseable_template() -> str:
 def test_extracts_amount_from_total_factura_line() -> None:
     inv = parse_text(_parseable_template(), source_path="/tmp/x.pdf", content_hash="h")
     assert inv.amount == Decimal("0.27")
-
-
-def test_extracts_invoice_id_inline_after_label() -> None:
-    inv = parse_text(_parseable_template(), source_path="/tmp/x.pdf", content_hash="h")
-    assert inv.invoice_id == "PP-2026-001"
 
 
 def test_extracts_invoice_date_with_four_digit_year() -> None:
@@ -53,13 +47,13 @@ def test_extracts_month_year_period() -> None:
 
 
 def test_missing_total_factura_raises() -> None:
-    text = "Fecha de emisión: 02/05/2026\nNúmero de factura: ABC\nPeríodo facturado: Mayo 2026\n"
+    text = "Fecha de emisión: 02/05/2026\nPeríodo facturado: Mayo 2026\n"
     with pytest.raises(InvoiceParseError, match="Total factura"):
         parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
 
 
 def test_missing_period_raises() -> None:
-    text = "Fecha de emisión: 02/05/2026\nNúmero de factura: ABC\nTotal factura 0,27 €\n"
+    text = "Fecha de emisión: 02/05/2026\nTotal factura 0,27 €\n"
     with pytest.raises(InvoiceParseError, match="Período"):
         parse_text(text, source_path="/tmp/x.pdf", content_hash="h")
 
@@ -67,7 +61,6 @@ def test_missing_period_raises() -> None:
 def test_extracts_amount_with_thousands_separator() -> None:
     text = (
         "Fecha de emisión: 02/05/2026\n"
-        "Número de factura: ABC\n"
         "Período facturado: Mayo 2026\n"
         "Total factura 1.234,56 €\n"
     )

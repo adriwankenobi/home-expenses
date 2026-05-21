@@ -34,7 +34,7 @@ def _valid_payload(tmp_path: Path) -> dict[str, Any]:
                 "invoice_folder": str(invoice_dir),
                 "invoice_parser": "pepeenergy",
                 "recurrence": "monthly",
-                "patterns": ["RECIBO PEPE ENERGY"],
+                "patterns": ["PEPE ENERGY INVOICE"],
             },
         },
         "manual_mappings": {},
@@ -93,7 +93,7 @@ def test_invalid_recurrence_value(tmp_path: Path) -> None:
 
 def test_manual_mapping_collides_with_pattern_rejected(tmp_path: Path) -> None:
     payload = _valid_payload(tmp_path)
-    payload["manual_mappings"] = {"RECIBO PEPE ENERGY": {"category": "electricity"}}
+    payload["manual_mappings"] = {"PEPE ENERGY INVOICE": {"category": "electricity"}}
     p = _write_config(tmp_path, payload)
     with pytest.raises(ConfigError, match="collide"):
         load_config(p)
@@ -194,7 +194,7 @@ def test_start_date_none_recurrence_parses_yyyy_mm_dd(tmp_path: Path) -> None:
 
 
 def _add_split_pair_no_invoices(
-    payload: dict[str, Any], pattern: str = "RECIBO TRIMESTRAL"
+    payload: dict[str, Any], pattern: str = "QUARTERLY INVOICE"
 ) -> None:
     payload["categories"]["water"] = {"recurrence": "quarterly", "patterns": [pattern]}
     payload["categories"]["tax"] = {"recurrence": "quarterly", "patterns": [pattern]}
@@ -222,13 +222,13 @@ def test_split_group_with_invoices(tmp_path: Path) -> None:
     inv_b.mkdir()
     payload["categories"]["a"] = {
         "recurrence": "quarterly",
-        "patterns": ["RECIBO TRIMESTRAL"],
+        "patterns": ["QUARTERLY INVOICE"],
         "invoice_folder": str(inv_a),
         "invoice_parser": "pepeenergy",
     }
     payload["categories"]["b"] = {
         "recurrence": "quarterly",
-        "patterns": ["RECIBO TRIMESTRAL"],
+        "patterns": ["QUARTERLY INVOICE"],
         "invoice_folder": str(inv_b),
         "invoice_parser": "pepeenergy",
     }
@@ -267,8 +267,8 @@ def test_split_group_conflicting_peer_sets_rejected(tmp_path: Path) -> None:
 
 def test_split_group_mismatched_recurrence_rejected(tmp_path: Path) -> None:
     payload = _valid_payload(tmp_path)
-    payload["categories"]["x"] = {"recurrence": "quarterly", "patterns": ["RECIBO TRIMESTRAL"]}
-    payload["categories"]["y"] = {"recurrence": "monthly", "patterns": ["RECIBO TRIMESTRAL"]}
+    payload["categories"]["x"] = {"recurrence": "quarterly", "patterns": ["QUARTERLY INVOICE"]}
+    payload["categories"]["y"] = {"recurrence": "monthly", "patterns": ["QUARTERLY INVOICE"]}
     p = _write_config(tmp_path, payload)
 
     with pytest.raises(ConfigError, match="same recurrence"):
@@ -277,8 +277,8 @@ def test_split_group_mismatched_recurrence_rejected(tmp_path: Path) -> None:
 
 def test_split_group_recurrence_none_rejected(tmp_path: Path) -> None:
     payload = _valid_payload(tmp_path)
-    payload["categories"]["x"] = {"recurrence": "none", "patterns": ["RECIBO TRIMESTRAL"]}
-    payload["categories"]["y"] = {"recurrence": "none", "patterns": ["RECIBO TRIMESTRAL"]}
+    payload["categories"]["x"] = {"recurrence": "none", "patterns": ["QUARTERLY INVOICE"]}
+    payload["categories"]["y"] = {"recurrence": "none", "patterns": ["QUARTERLY INVOICE"]}
     p = _write_config(tmp_path, payload)
 
     with pytest.raises(ConfigError, match="cannot have recurrence"):
@@ -291,13 +291,13 @@ def test_split_group_mixed_invoice_folder_rejected(tmp_path: Path) -> None:
     inv.mkdir()
     payload["categories"]["x"] = {
         "recurrence": "quarterly",
-        "patterns": ["RECIBO TRIMESTRAL"],
+        "patterns": ["QUARTERLY INVOICE"],
         "invoice_folder": str(inv),
         "invoice_parser": "pepeenergy",
     }
     payload["categories"]["y"] = {
         "recurrence": "quarterly",
-        "patterns": ["RECIBO TRIMESTRAL"],
+        "patterns": ["QUARTERLY INVOICE"],
     }
     p = _write_config(tmp_path, payload)
 
@@ -312,7 +312,7 @@ def test_period_contains_payment_accepted_with_valid_recurrence(tmp_path: Path) 
     payload = _valid_payload(tmp_path)
     payload["categories"]["fee"] = {
         "recurrence": "yearly",
-        "patterns": ["RECIBO ANUAL"],
+        "patterns": ["ANNUAL INVOICE"],
         "period_contains_payment": True,
     }
     p = _write_config(tmp_path, payload)

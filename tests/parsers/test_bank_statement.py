@@ -24,23 +24,23 @@ def test_parses_cp1252_encoded_file() -> None:
 def test_credit_rows_are_included() -> None:
     result = parse_bank_statement(FIXTURE)
     descriptions = [t.description for t in result.transactions]
-    assert "ABONO NOMINA" in descriptions
+    assert "PAYROLL CREDIT" in descriptions
 
 
 def test_amounts_are_positive_decimals() -> None:
     result = parse_bank_statement(FIXTURE)
     # All amounts stored as absolute value regardless of sign in source.
-    pepe = next(t for t in result.transactions if t.description == "RECIBO PEPE ENERGY")
+    pepe = next(t for t in result.transactions if t.description == "PEPE ENERGY INVOICE")
     assert pepe.amount == Decimal("11.11")
     assert pepe.amount > 0
-    abono = next(t for t in result.transactions if t.description == "ABONO NOMINA")
+    abono = next(t for t in result.transactions if t.description == "PAYROLL CREDIT")
     assert abono.amount == Decimal("1500.00")
     assert abono.amount > 0
 
 
 def test_dates_parsed_as_date_objects() -> None:
     result = parse_bank_statement(FIXTURE)
-    pepe = next(t for t in result.transactions if t.description == "RECIBO PEPE ENERGY")
+    pepe = next(t for t in result.transactions if t.description == "PEPE ENERGY INVOICE")
     assert pepe.date == date(2026, 5, 18)
 
 

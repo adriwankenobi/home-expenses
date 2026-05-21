@@ -56,9 +56,10 @@ def _serialize_model(model: ReportModel) -> str:
                 "display_recurrence": it.display_recurrence,
                 "display_period_contains_payment": it.display_period_contains_payment,
                 "invoice_path": (it.invoice.source_path if it.invoice is not None else None),
-                "invoice_id": (it.invoice.invoice_id if it.invoice is not None else None),
                 "invoice_date": (
-                    it.invoice.invoice_date.isoformat() if it.invoice is not None else None
+                    it.invoice.invoice_date.isoformat()
+                    if it.invoice is not None and it.invoice.invoice_date is not None
+                    else None
                 ),
                 "period_start": (
                     it.invoice.period.start.isoformat() if it.invoice is not None else None

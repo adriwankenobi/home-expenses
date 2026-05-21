@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 
 from home_expenses.config import Config, SplitGroup
 from home_expenses.models import (
@@ -73,7 +74,27 @@ def match(
         category_name, invoice = _try_invoice_match(txn, inv_lists, config, alerts, consumed)
         if invoice is not None and category_name is not None:
             consumed.add((category_name, invoice.content_hash))
-            items.append(Item(transaction=txn, category=category_name, invoice=invoice))
+            # If a manual mapping pinned this txn to that category, carry
+            # its display overrides (recurrence / period_contains_payment)
+            # through to the resulting Item.
+            mapping = config.manual_mappings.get(txn.description)
+            items.append(
+                Item(
+                    transaction=txn,
+                    category=category_name,
+                    invoice=invoice,
+                    display_recurrence=(
+                        mapping.recurrence
+                        if mapping is not None and mapping.category == category_name
+                        else None
+                    ),
+                    display_period_contains_payment=(
+                        mapping.period_contains_payment
+                        if mapping is not None and mapping.category == category_name
+                        else None
+                    ),
+                )
+            )
             continue
 
         pattern_cat = _try_pattern_match(txn, config, alerts)
@@ -183,15 +204,28 @@ def match(
     for cat_name, invs in inv_lists.items():
         for inv in invs:
             if (cat_name, inv.content_hash) not in consumed:
+                period_str = (
+                    f"{inv.period.start.isoformat()}→{inv.period.end.isoformat()}"
+                )
                 alerts.append(
                     Alert(
                         kind=AlertKind.ORPHAN_INVOICE,
-                        message=f"invoice not matched to any expense: {inv.source_path}",
+                        message=(
+                            f"invoice not matched to any expense in '{cat_name}': "
+                            f"amount={inv.amount} period={period_str} "
+                            f"path={inv.source_path}"
+                        ),
                         payload={
                             "source_path": inv.source_path,
                             "category": cat_name,
                             "amount": str(inv.amount),
-                            "invoice_date": inv.invoice_date.isoformat(),
+                            "invoice_date": (
+                                inv.invoice_date.isoformat()
+                                if inv.invoice_date is not None
+                                else None
+                            ),
+                            "period_start": inv.period.start.isoformat(),
+                            "period_end": inv.period.end.isoformat(),
                         },
                     )
                 )
@@ -225,10 +259,21 @@ def _try_invoice_match(
     restrict_to: frozenset[str] | None = None,
 ) -> tuple[str | None, Invoice | None]:
     candidates: list[tuple[str, Invoice]] = []
+    desc_upper = txn.description.upper()
+    mapping = config.manual_mappings.get(txn.description)
     for cat_name, invs in inv_lists.items():
         if restrict_to is not None and cat_name not in restrict_to:
             continue
         cat = config.categories.get(cat_name)
+        # The transaction must already belong to this category — either
+        # because one of its patterns matches the description, or because
+        # the user manual-mapped this exact description to it. Without
+        # this guard a coincidental amount match would silently steal an
+        # unrelated invoice.
+        pattern_hit = cat is not None and any(p.upper() in desc_upper for p in cat.patterns)
+        mapped_here = mapping is not None and mapping.category == cat_name
+        if not pattern_hit and not mapped_here:
+            continue
         window = (
             cat.match_window_days
             if cat is not None and cat.match_window_days is not None
@@ -237,9 +282,17 @@ def _try_invoice_match(
         for inv in invs:
             if inv.amount != txn.amount:
                 continue
-            delta = (txn.date - inv.invoice_date).days
-            if 0 <= delta <= window:
-                candidates.append((cat_name, inv))
+            if inv.invoice_date is not None:
+                delta = (txn.date - inv.invoice_date).days
+                if 0 <= delta <= window:
+                    candidates.append((cat_name, inv))
+            else:
+                # No issue date on the invoice (e.g. IBI): fall back to period
+                # bounds, accepting payments inside the period or up to `window`
+                # days after period.end.
+                latest = inv.period.end + timedelta(days=window)
+                if inv.period.start <= txn.date <= latest:
+                    candidates.append((cat_name, inv))
     if not candidates:
         return None, None
     if len(candidates) == 1:
