@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import date
 
-from home_expenses.models import Alert, Item, ReportModel
+from home_expenses.models import Alert, Item, ReportCategory, ReportModel
 
 
 def build_report_model(
@@ -14,7 +14,7 @@ def build_report_model(
     alerts: Iterable[Alert],
     currency: str,
     generated_at: date,
-    categories: dict[str, str] | None = None,
+    categories_by_name: dict[str, ReportCategory],
 ) -> ReportModel:
     items_t = tuple(items)
     years = tuple(sorted({it.transaction.date.year for it in items_t}, reverse=True))
@@ -24,5 +24,5 @@ def build_report_model(
         items=items_t,
         alerts=tuple(alerts),
         years=years,
-        categories=dict(categories) if categories else {},
+        categories_by_name=dict(categories_by_name),
     )

@@ -91,20 +91,9 @@ def test_invalid_recurrence_value(tmp_path: Path) -> None:
         load_config(p)
 
 
-def test_duplicate_pattern_across_categories_rejected(tmp_path: Path) -> None:
-    payload = _valid_payload(tmp_path)
-    payload["categories"]["other"] = {
-        "patterns": ["RECIBO PEPE ENERGY"],
-        "recurrence": "monthly",
-    }
-    p = _write_config(tmp_path, payload)
-    with pytest.raises(ConfigError, match="duplicate"):
-        load_config(p)
-
-
 def test_manual_mapping_collides_with_pattern_rejected(tmp_path: Path) -> None:
     payload = _valid_payload(tmp_path)
-    payload["manual_mappings"] = {"RECIBO PEPE ENERGY": "electricity"}
+    payload["manual_mappings"] = {"RECIBO PEPE ENERGY": {"category": "electricity"}}
     p = _write_config(tmp_path, payload)
     with pytest.raises(ConfigError, match="collide"):
         load_config(p)
@@ -126,17 +115,9 @@ def test_bank_statements_must_be_object(tmp_path: Path) -> None:
 
 def test_categories_must_be_object(tmp_path: Path) -> None:
     payload = _valid_payload(tmp_path)
-    payload["categories"] = []
+    payload["categories"] = [{"name": "x", "recurrence": "monthly"}]
     p = _write_config(tmp_path, payload)
-    with pytest.raises(ConfigError, match="categories must be an object"):
-        load_config(p)
-
-
-def test_category_entry_must_be_object(tmp_path: Path) -> None:
-    payload = _valid_payload(tmp_path)
-    payload["categories"]["broken"] = "not a dict"
-    p = _write_config(tmp_path, payload)
-    with pytest.raises(ConfigError, match="category 'broken' must be an object"):
+    with pytest.raises(ConfigError, match="must be a JSON object"):
         load_config(p)
 
 
@@ -207,3 +188,239 @@ def test_start_date_none_recurrence_parses_yyyy_mm_dd(tmp_path: Path) -> None:
     p = _write_config(tmp_path, payload)
     cfg = load_config(p)
     assert cfg.categories["electricity"].start_date == _date(2024, 3, 15)
+
+
+# --- split groups ---
+
+
+def _add_split_pair_no_invoices(
+    payload: dict[str, Any], pattern: str = "RECIBO TRIMESTRAL"
+) -> None:
+    payload["categories"]["water"] = {"recurrence": "quarterly", "patterns": [pattern]}
+    payload["categories"]["tax"] = {"recurrence": "quarterly", "patterns": [pattern]}
+
+
+def test_shared_pattern_forms_split_group(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    _add_split_pair_no_invoices(payload)
+    p = _write_config(tmp_path, payload)
+
+    cfg = load_config(p)
+
+    assert len(cfg.split_groups) == 1
+    grp = cfg.split_groups[0]
+    assert tuple(m.name for m in grp.members) == ("water", "tax")  # config order
+    assert grp.recurrence == "quarterly"
+    assert grp.has_invoices is False
+
+
+def test_split_group_with_invoices(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    inv_a = tmp_path / "inv_a"
+    inv_a.mkdir()
+    inv_b = tmp_path / "inv_b"
+    inv_b.mkdir()
+    payload["categories"]["a"] = {
+        "recurrence": "quarterly",
+        "patterns": ["RECIBO TRIMESTRAL"],
+        "invoice_folder": str(inv_a),
+        "invoice_parser": "pepeenergy",
+    }
+    payload["categories"]["b"] = {
+        "recurrence": "quarterly",
+        "patterns": ["RECIBO TRIMESTRAL"],
+        "invoice_folder": str(inv_b),
+        "invoice_parser": "pepeenergy",
+    }
+    p = _write_config(tmp_path, payload)
+
+    cfg = load_config(p)
+
+    assert len(cfg.split_groups) == 1
+    assert cfg.split_groups[0].has_invoices is True
+
+
+def test_split_group_with_extra_non_shared_patterns_accepted(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["a"] = {"recurrence": "quarterly", "patterns": ["SHARED", "ONLY_A"]}
+    payload["categories"]["b"] = {"recurrence": "quarterly", "patterns": ["SHARED"]}
+    p = _write_config(tmp_path, payload)
+
+    cfg = load_config(p)
+
+    assert len(cfg.split_groups) == 1
+    grp = cfg.split_groups[0]
+    assert grp.patterns == ("SHARED",)
+    assert tuple(m.name for m in grp.members) == ("a", "b")
+
+
+def test_split_group_conflicting_peer_sets_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["a"] = {"recurrence": "quarterly", "patterns": ["P1", "P2"]}
+    payload["categories"]["b"] = {"recurrence": "quarterly", "patterns": ["P1"]}
+    payload["categories"]["c"] = {"recurrence": "quarterly", "patterns": ["P2"]}
+    p = _write_config(tmp_path, payload)
+
+    with pytest.raises(ConfigError, match="conflicting split groups"):
+        load_config(p)
+
+
+def test_split_group_mismatched_recurrence_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["x"] = {"recurrence": "quarterly", "patterns": ["RECIBO TRIMESTRAL"]}
+    payload["categories"]["y"] = {"recurrence": "monthly", "patterns": ["RECIBO TRIMESTRAL"]}
+    p = _write_config(tmp_path, payload)
+
+    with pytest.raises(ConfigError, match="same recurrence"):
+        load_config(p)
+
+
+def test_split_group_recurrence_none_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["x"] = {"recurrence": "none", "patterns": ["RECIBO TRIMESTRAL"]}
+    payload["categories"]["y"] = {"recurrence": "none", "patterns": ["RECIBO TRIMESTRAL"]}
+    p = _write_config(tmp_path, payload)
+
+    with pytest.raises(ConfigError, match="cannot have recurrence"):
+        load_config(p)
+
+
+def test_split_group_mixed_invoice_folder_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    inv = tmp_path / "inv_x"
+    inv.mkdir()
+    payload["categories"]["x"] = {
+        "recurrence": "quarterly",
+        "patterns": ["RECIBO TRIMESTRAL"],
+        "invoice_folder": str(inv),
+        "invoice_parser": "pepeenergy",
+    }
+    payload["categories"]["y"] = {
+        "recurrence": "quarterly",
+        "patterns": ["RECIBO TRIMESTRAL"],
+    }
+    p = _write_config(tmp_path, payload)
+
+    with pytest.raises(ConfigError, match="invoice"):
+        load_config(p)
+
+
+# --- period_contains_payment flag ---
+
+
+def test_period_contains_payment_accepted_with_valid_recurrence(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["fee"] = {
+        "recurrence": "yearly",
+        "patterns": ["RECIBO ANUAL"],
+        "period_contains_payment": True,
+    }
+    p = _write_config(tmp_path, payload)
+
+    cfg = load_config(p)
+
+    assert cfg.categories["fee"].period_contains_payment is True
+
+
+def test_period_contains_payment_rejected_with_recurrence_none(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["fee"] = {
+        "recurrence": "none",
+        "patterns": ["X"],
+        "period_contains_payment": True,
+    }
+    p = _write_config(tmp_path, payload)
+
+    with pytest.raises(ConfigError, match="period_contains_payment.*recurrence"):
+        load_config(p)
+
+
+# --- manual_mapping object form ---
+
+
+def test_manual_mappings_string_form_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {"X": "electricity"}
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="must be an object"):
+        load_config(p)
+
+
+def test_manual_mapping_routes_with_category_only(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {"FOO": {"category": "electricity"}}
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    m = cfg.manual_mappings["FOO"]
+    assert m.category == "electricity"
+    assert m.recurrence is None
+    assert m.period_contains_payment is None
+
+
+def test_manual_mapping_carries_recurrence_override(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {"FOO": {"category": "electricity", "recurrence": "yearly"}}
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    assert cfg.manual_mappings["FOO"].recurrence == "yearly"
+
+
+def test_manual_mapping_carries_period_contains_payment(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "FOO": {
+            "category": "electricity",
+            "recurrence": "yearly",
+            "period_contains_payment": True,
+        }
+    }
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    assert cfg.manual_mappings["FOO"].period_contains_payment is True
+
+
+def test_manual_mapping_unknown_category_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {"FOO": {"category": "nope"}}
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="unknown category"):
+        load_config(p)
+
+
+def test_manual_mapping_missing_category_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {"FOO": {"recurrence": "yearly"}}
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="missing required 'category'"):
+        load_config(p)
+
+
+def test_manual_mapping_invalid_recurrence_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {"FOO": {"category": "electricity", "recurrence": "weekly"}}
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="invalid recurrence"):
+        load_config(p)
+
+
+def test_manual_mapping_pcp_must_be_bool(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "FOO": {
+            "category": "electricity",
+            "recurrence": "yearly",
+            "period_contains_payment": "yes",
+        }
+    }
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="must be a boolean"):
+        load_config(p)
+
+
+def test_manual_mapping_pcp_with_effective_none_recurrence_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["misc"] = {"recurrence": "none"}
+    payload["manual_mappings"] = {"FOO": {"category": "misc", "period_contains_payment": True}}
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="period_contains_payment"):
+        load_config(p)

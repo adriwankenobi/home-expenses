@@ -46,6 +46,8 @@ class Item:
     transaction: Transaction
     category: str
     invoice: Invoice | None
+    display_recurrence: str | None = None
+    display_period_contains_payment: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,8 @@ class AlertKind(StrEnum):
     RECURRING_MISSED = "recurring_missed"
     AMBIGUOUS_INVOICE_MATCH = "ambiguous_invoice_match"
     AMBIGUOUS_PATTERN_MATCH = "ambiguous_pattern_match"
+    AMBIGUOUS_SPLIT_BUCKET = "ambiguous_split_bucket"
+    SPLIT_AMOUNT_TIE = "split_amount_tie"
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,15 @@ class Alert:
 
 
 @dataclass(frozen=True)
+class ReportCategory:
+    """Per-category display metadata consumed by the report renderer."""
+
+    name: str
+    recurrence: str
+    period_contains_payment: bool
+
+
+@dataclass(frozen=True)
 class ReportModel:
     """The fully assembled data the renderer consumes."""
 
@@ -85,7 +98,4 @@ class ReportModel:
     items: tuple[Item, ...]
     alerts: tuple[Alert, ...]
     years: tuple[int, ...]
-    # Map of category name → recurrence kind ("monthly" / "bimonthly" /
-    # "quarterly" / "yearly" / "none"). Used by the renderer to synthesize
-    # period and invoice-date placeholders for items lacking a real invoice.
-    categories: dict[str, str] = field(default_factory=dict)
+    categories_by_name: dict[str, ReportCategory] = field(default_factory=dict)

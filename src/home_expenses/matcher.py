@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from home_expenses.config import Config
+from home_expenses.config import Config, SplitGroup
 from home_expenses.models import (
     Alert,
     AlertKind,
@@ -13,6 +13,7 @@ from home_expenses.models import (
     Item,
     Transaction,
 )
+from home_expenses.recurrence import Period, period_for
 
 
 @dataclass(frozen=True)
@@ -33,8 +34,42 @@ def match(
     items: list[Item] = []
     alerts: list[Alert] = []
     unmatched: list[Transaction] = []
+    deferred: dict[int, tuple[SplitGroup, list[Transaction]]] = {}
 
     for txn in transactions:
+        group = _split_group_for(txn, config)
+        if group is not None:
+            if group.has_invoices:
+                allowed = frozenset(m.name for m in group.members)
+                cat_name, invoice = _try_invoice_match(
+                    txn, inv_lists, config, alerts, consumed, restrict_to=allowed
+                )
+                if invoice is not None and cat_name is not None:
+                    consumed.add((cat_name, invoice.content_hash))
+                    items.append(Item(transaction=txn, category=cat_name, invoice=invoice))
+                    continue
+                for m in group.members:
+                    if m.start_date is None or txn.date >= m.start_date:
+                        alerts.append(
+                            Alert(
+                                kind=AlertKind.EXPENSE_MISSING_INVOICE,
+                                message=f"expense in '{m.name}' has no matched invoice",
+                                payload={
+                                    "date": txn.date.isoformat(),
+                                    "description": txn.description,
+                                    "amount": str(txn.amount),
+                                    "category": m.name,
+                                },
+                            )
+                        )
+                unmatched.append(txn)
+                continue
+            # rank-based: defer until we have the full period bucket
+            entry = deferred.setdefault(id(group), (group, []))
+            entry[1].append(txn)
+            continue
+
+        # Existing logic for non-split-group transactions.
         category_name, invoice = _try_invoice_match(txn, inv_lists, config, alerts, consumed)
         if invoice is not None and category_name is not None:
             consumed.add((category_name, invoice.content_hash))
@@ -42,32 +77,108 @@ def match(
             continue
 
         pattern_cat = _try_pattern_match(txn, config, alerts)
-        if pattern_cat is None:
-            pattern_cat = config.manual_mappings.get(txn.description)
-        if pattern_cat is None:
+        if pattern_cat is not None:
+            items.append(Item(transaction=txn, category=pattern_cat, invoice=None))
+            cat_def = config.categories.get(pattern_cat)
+            if (
+                cat_def is not None
+                and cat_def.invoice_folder is not None
+                and (cat_def.start_date is None or txn.date >= cat_def.start_date)
+            ):
+                alerts.append(
+                    Alert(
+                        kind=AlertKind.EXPENSE_MISSING_INVOICE,
+                        message=f"expense in '{pattern_cat}' has no matched invoice",
+                        payload={
+                            "date": txn.date.isoformat(),
+                            "description": txn.description,
+                            "amount": str(txn.amount),
+                            "category": pattern_cat,
+                        },
+                    )
+                )
+            continue
+
+        mapping = config.manual_mappings.get(txn.description)
+        if mapping is None:
             # Silently drop transactions that don't match any configured category.
             unmatched.append(txn)
             continue
 
-        items.append(Item(transaction=txn, category=pattern_cat, invoice=None))
-        cat_def = config.categories.get(pattern_cat)
-        if (
-            cat_def is not None
-            and cat_def.invoice_folder is not None
-            and (cat_def.start_date is None or txn.date >= cat_def.start_date)
-        ):
-            alerts.append(
-                Alert(
-                    kind=AlertKind.EXPENSE_MISSING_INVOICE,
-                    message=f"expense in '{pattern_cat}' has no matched invoice",
-                    payload={
-                        "date": txn.date.isoformat(),
-                        "description": txn.description,
-                        "amount": str(txn.amount),
-                        "category": pattern_cat,
-                    },
-                )
+        items.append(
+            Item(
+                transaction=txn,
+                category=mapping.category,
+                invoice=None,
+                display_recurrence=mapping.recurrence,
+                display_period_contains_payment=mapping.period_contains_payment,
             )
+        )
+
+    # Rank pass: assign deferred rank-based split-group transactions.
+    for _, (group, txns) in deferred.items():
+        buckets: dict[str, tuple[Period, list[Transaction]]] = {}
+        for t in txns:
+            p = period_for(t.date, group.recurrence)
+            buckets.setdefault(p.label, (p, []))[1].append(t)
+
+        for _label, (period, bucket) in buckets.items():
+            active = [
+                m for m in group.members if m.start_date is None or m.start_date <= period.end
+            ]
+            if len(bucket) != len(active):
+                alerts.append(
+                    Alert(
+                        kind=AlertKind.AMBIGUOUS_SPLIT_BUCKET,
+                        message=(
+                            f"split-group bucket size mismatch in {period.label}: "
+                            f"expected {len(active)}, got {len(bucket)}"
+                        ),
+                        payload={
+                            "group": [m.name for m in group.members],
+                            "period": period.label,
+                            "expected": len(active),
+                            "actual": len(bucket),
+                            "transactions": [
+                                {
+                                    "date": t.date.isoformat(),
+                                    "description": t.description,
+                                    "amount": str(t.amount),
+                                }
+                                for t in bucket
+                            ],
+                        },
+                    )
+                )
+                unmatched.extend(bucket)
+                continue
+            amounts = [t.amount for t in bucket]
+            if len(set(amounts)) != len(amounts):
+                tied = [t for t in bucket if amounts.count(t.amount) > 1]
+                alerts.append(
+                    Alert(
+                        kind=AlertKind.SPLIT_AMOUNT_TIE,
+                        message=(
+                            f"split-group amount tie in {period.label}: "
+                            f"{len(tied)} transactions share an amount"
+                        ),
+                        payload={
+                            "group": [m.name for m in group.members],
+                            "period": period.label,
+                            "transactions": [
+                                {
+                                    "date": t.date.isoformat(),
+                                    "description": t.description,
+                                    "amount": str(t.amount),
+                                }
+                                for t in tied
+                            ],
+                        },
+                    )
+                )
+            ranked = sorted(bucket, key=lambda t: (-t.amount, t.date))
+            for cat, t in zip(active, ranked, strict=True):
+                items.append(Item(transaction=t, category=cat.name, invoice=None))
 
     for cat_name, invs in inv_lists.items():
         for inv in invs:
@@ -92,15 +203,31 @@ def match(
     )
 
 
+def _split_group_for(
+    txn: Transaction,
+    config: Config,
+) -> SplitGroup | None:
+    desc_upper = txn.description.upper()
+    for group in config.split_groups:
+        for pat in group.patterns:
+            if pat.upper() in desc_upper:
+                return group
+    return None
+
+
 def _try_invoice_match(
     txn: Transaction,
     inv_lists: Mapping[str, list[Invoice]],
     config: Config,
     alerts: list[Alert],
     consumed: set[tuple[str, str]],
+    *,
+    restrict_to: frozenset[str] | None = None,
 ) -> tuple[str | None, Invoice | None]:
     candidates: list[tuple[str, Invoice]] = []
     for cat_name, invs in inv_lists.items():
+        if restrict_to is not None and cat_name not in restrict_to:
+            continue
         cat = config.categories.get(cat_name)
         window = (
             cat.match_window_days
@@ -143,10 +270,10 @@ def _try_pattern_match(
 ) -> str | None:
     desc_upper = txn.description.upper()
     hits: list[str] = []
-    for cat_name, cat in config.categories.items():
+    for name, cat in config.categories.items():
         for pat in cat.patterns:
             if pat.upper() in desc_upper:
-                hits.append(cat_name)
+                hits.append(name)
                 break
     if not hits:
         return None

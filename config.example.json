@@ -10,7 +10,7 @@
       "invoice_folder": "/path/to/invoices/pepeenergy",
       "invoice_parser": "pepeenergy",
       "recurrence": "monthly",
-      "patterns": ["RECIBO PEPE ENERGY"],
+      "patterns": ["PEPE ENERGY INVOICE"],
       "match_window_days": 15,
       "start_date": "2024-01"
     },
@@ -18,25 +18,41 @@
       "invoice_folder": "/path/to/invoices/pepephone",
       "invoice_parser": "pepephone",
       "recurrence": "none",
-      "patterns": ["RECIBO Pepe Mobile, S.L.U."],
+      "patterns": ["PEPE MOBILE INVOICE"],
       "match_window_days": 15
     },
     "monthly": {
-      "patterns": ["RECIBO MENSUAL"],
+      "patterns": ["MONTHLY INVOICE"],
       "recurrence": "monthly"
     },
     "bimonthly": {
-      "patterns": ["RECIBO BIMENSUAL"],
+      "patterns": ["BIMONTHLY INVOICE"],
       "recurrence": "bimonthly"
     },
     "quarterly": {
-      "patterns": ["RECIBO TRIMESTRAL"],
+      "patterns": ["QUARTERLY INVOICE"],
       "recurrence": "quarterly"
     },
     "yearly": {
-      "patterns": ["RECIBO ANUAL"],
-      "recurrence": "yearly"
+      "patterns": ["ANNUAL INVOICE"],
+      "recurrence": "yearly",
+      "period_contains_payment": true
+    },
+    "sharedQuarterly1": {
+      "patterns": ["SHARED QUARTERLY INVOICE"],
+      "recurrence": "quarterly"
+    },
+    "sharedQuarterly2": {
+      "patterns": ["SHARED QUARTERLY INVOICE"],
+      "recurrence": "quarterly",
+      "start_date": "2024-Q3"
     }
   },
-  "manual_mappings": {}
+  "manual_mappings": {
+    "UNIQUE ANNUAL CHARGE 2024-09-15": {
+      "category": "sharedQuarterly1",
+      "recurrence": "yearly",
+      "period_contains_payment": true
+    }
+  }
 }

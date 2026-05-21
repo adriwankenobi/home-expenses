@@ -57,3 +57,10 @@ def test_alert_kind_enum() -> None:
 def test_alert_dataclass() -> None:
     alert = Alert(kind=AlertKind.UNCLASSIFIED_EXPENSE, message="x", payload={"a": 1})
     assert alert.kind is AlertKind.UNCLASSIFIED_EXPENSE
+
+
+def test_alertkind_has_split_values() -> None:
+    from home_expenses.models import AlertKind
+
+    assert AlertKind.AMBIGUOUS_SPLIT_BUCKET.value == "ambiguous_split_bucket"
+    assert AlertKind.SPLIT_AMOUNT_TIE.value == "split_amount_tie"

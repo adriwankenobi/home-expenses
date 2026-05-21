@@ -49,9 +49,13 @@ def make_item(
     transaction: Transaction | None = None,
     category: str = "test_category",
     invoice: Invoice | None = None,
+    display_recurrence: str | None = None,
+    display_period_contains_payment: bool | None = None,
 ) -> Item:
     return Item(
         transaction=transaction or make_transaction(),
         category=category,
         invoice=invoice,
+        display_recurrence=display_recurrence,
+        display_period_contains_payment=display_period_contains_payment,
     )

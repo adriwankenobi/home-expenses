@@ -89,6 +89,22 @@ class Category:
     patterns: tuple[str, ...] = ()
     match_window_days: int | None = None
     start_date: date | None = None  # No "missing" alerts before this date.
+    period_contains_payment: bool = False
+
+
+@dataclass(frozen=True)
+class SplitGroup:
+    members: tuple[Category, ...]  # in config order
+    recurrence: Recurrence  # never "none"
+    has_invoices: bool
+    patterns: tuple[str, ...]  # patterns shared across all members
+
+
+@dataclass(frozen=True)
+class ManualMapping:
+    category: str
+    recurrence: Recurrence | None = None
+    period_contains_payment: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -104,7 +120,8 @@ class Config:
     match_window_days_default: int
     cache_dir: Path
     categories: dict[str, Category] = field(default_factory=dict)
-    manual_mappings: dict[str, str] = field(default_factory=dict)
+    manual_mappings: dict[str, ManualMapping] = field(default_factory=dict)
+    split_groups: tuple[SplitGroup, ...] = ()
 
 
 def load_config(path: Path) -> Config:
@@ -133,9 +150,14 @@ def load_config(path: Path) -> Config:
     cache_dir_raw = raw.get("cache_dir")
     cache_dir = Path(cache_dir_raw) if cache_dir_raw else path.parent / "cache"
 
+    cats_raw = raw["categories"]
+    if isinstance(cats_raw, list):
+        raise ConfigError(f"{path}: categories must be a JSON object")
+    _require_dict(cats_raw, "categories", path)
+
     categories: dict[str, Category] = {}
-    pattern_owners: dict[str, str] = {}
-    for name, c in _require_dict(raw["categories"], "categories", path).items():
+    pattern_owners: dict[str, list[str]] = {}
+    for name, c in cats_raw.items():
         _require_dict(c, f"category '{name}'", path)
         if "recurrence" not in c:
             raise ConfigError(f"{path}: category '{name}' missing 'recurrence'")
@@ -157,16 +179,17 @@ def load_config(path: Path) -> Config:
                 )
         patterns = tuple(c.get("patterns", ()))
         for p in patterns:
-            if p in pattern_owners:
-                raise ConfigError(
-                    f"{path}: duplicate pattern '{p}' in categories "
-                    f"'{pattern_owners[p]}' and '{name}'"
-                )
-            pattern_owners[p] = name
+            pattern_owners.setdefault(p, []).append(name)
         start_date_raw = c.get("start_date")
         start_date_val: date | None = None
         if start_date_raw is not None:
             start_date_val = _parse_start_date(start_date_raw, c["recurrence"], path, name)
+        period_contains_payment = bool(c.get("period_contains_payment", False))
+        if period_contains_payment and c["recurrence"] == "none":
+            raise ConfigError(
+                f"{path}: category '{name}' has 'period_contains_payment: true' but "
+                f"recurrence is 'none'; this flag requires a recurrence other than 'none'"
+            )
         categories[name] = Category(
             name=name,
             recurrence=c["recurrence"],
@@ -175,16 +198,109 @@ def load_config(path: Path) -> Config:
             patterns=patterns,
             match_window_days=c.get("match_window_days"),
             start_date=start_date_val,
+            period_contains_payment=period_contains_payment,
         )
 
-    manual_mappings: dict[str, str] = dict(
-        _require_dict(raw["manual_mappings"], "manual_mappings", path)
-    )
+    # Build implicit split groups from shared patterns. A category may have
+    # extra non-shared patterns that route normally; only patterns owned by 2+
+    # categories trigger split-group behavior. A category that participates in
+    # split groups must do so via exactly one peer set — sharing different
+    # patterns with different peers is rejected.
+    owner_peer_set: dict[str, frozenset[str]] = {}
+    patterns_by_peer_set: dict[frozenset[str], list[str]] = {}
+    for pat, owners in pattern_owners.items():
+        if len(owners) < 2:
+            continue
+        peer_set = frozenset(owners)
+        for o in owners:
+            existing = owner_peer_set.get(o)
+            if existing is not None and existing != peer_set:
+                raise ConfigError(
+                    f"{path}: category '{o}' participates in conflicting "
+                    f"split groups: shared with {sorted(existing - {o})} "
+                    f"and with {sorted(peer_set - {o})}"
+                )
+            owner_peer_set[o] = peer_set
+        patterns_by_peer_set.setdefault(peer_set, []).append(pat)
+
+    split_groups: list[SplitGroup] = []
+    for peer_set, shared_patterns in patterns_by_peer_set.items():
+        # Iterate categories in config (insertion) order, filter by peer set.
+        members = tuple(categories[n] for n in categories if n in peer_set)
+        member_names = [m.name for m in members]
+        recs = {m.recurrence for m in members}
+        if len(recs) != 1:
+            raise ConfigError(
+                f"{path}: split group {member_names} members must all "
+                f"have the same recurrence (got {sorted(recs)})"
+            )
+        (rec,) = recs
+        if rec == "none":
+            raise ConfigError(f"{path}: split group {member_names} cannot have recurrence 'none'")
+        has_inv = {m.invoice_folder is not None for m in members}
+        if len(has_inv) != 1:
+            raise ConfigError(
+                f"{path}: split group {member_names} must either all "
+                f"have invoice_folder set or none of them"
+            )
+        split_groups.append(
+            SplitGroup(
+                members=members,
+                recurrence=rec,
+                has_invoices=has_inv.pop(),
+                patterns=tuple(shared_patterns),
+            )
+        )
+
+    mm_raw = _require_dict(raw["manual_mappings"], "manual_mappings", path)
+    manual_mappings: dict[str, ManualMapping] = {}
+    for desc, entry in mm_raw.items():
+        if isinstance(entry, str):
+            raise ConfigError(
+                f"{path}: manual_mappings entry for '{desc}' must be an object "
+                f"with at least a 'category' field; the legacy short string "
+                f"form is no longer supported"
+            )
+        _require_dict(entry, f"manual_mappings['{desc}']", path)
+
+        cat_name = entry.get("category")
+        if not isinstance(cat_name, str) or cat_name == "":
+            raise ConfigError(f"{path}: manual_mappings['{desc}'] missing required 'category'")
+        if cat_name not in categories:
+            raise ConfigError(
+                f"{path}: manual_mappings['{desc}'] references unknown category '{cat_name}'"
+            )
+
+        recurrence_raw = entry.get("recurrence")
+        if recurrence_raw is not None and recurrence_raw not in _VALID_RECURRENCES:
+            raise ConfigError(
+                f"{path}: manual_mappings['{desc}'] has invalid recurrence '{recurrence_raw}'"
+            )
+
+        pcp = entry.get("period_contains_payment")
+        if pcp is not None and not isinstance(pcp, bool):
+            raise ConfigError(
+                f"{path}: manual_mappings['{desc}'] period_contains_payment must be a boolean"
+            )
+
+        effective_recurrence = recurrence_raw or categories[cat_name].recurrence
+        if pcp is True and effective_recurrence == "none":
+            raise ConfigError(
+                f"{path}: manual_mappings['{desc}'] has 'period_contains_payment: true' "
+                f"but the effective recurrence is 'none'"
+            )
+
+        manual_mappings[desc] = ManualMapping(
+            category=cat_name,
+            recurrence=recurrence_raw,
+            period_contains_payment=pcp,
+        )
+
     for desc in manual_mappings:
         if desc in pattern_owners:
             raise ConfigError(
                 f"{path}: manual_mapping key '{desc}' collides with pattern "
-                f"in category '{pattern_owners[desc]}'"
+                f"in category '{pattern_owners[desc][0]}'"
             )
 
     return Config(
@@ -194,4 +310,5 @@ def load_config(path: Path) -> Config:
         cache_dir=cache_dir,
         categories=categories,
         manual_mappings=manual_mappings,
+        split_groups=tuple(split_groups),
     )

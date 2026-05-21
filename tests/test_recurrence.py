@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from home_expenses.config import Category, Recurrence
 from home_expenses.models import AlertKind, Item
-from home_expenses.recurrence import check_recurrence
+from home_expenses.recurrence import Period, check_recurrence, period_for
 from tests.factories import make_item, make_transaction
 
 
@@ -138,3 +140,28 @@ def test_no_start_date_means_no_filter() -> None:
     )
     periods = sorted(a.payload["period"] for a in alerts)
     assert periods == ["2026-01", "2026-02"]
+
+
+def test_period_for_monthly_midmonth() -> None:
+    p = period_for(date(2026, 3, 17), "monthly")
+    assert p == Period(label="2026-03", start=date(2026, 3, 1), end=date(2026, 3, 31))
+
+
+def test_period_for_bimonthly_pairs_march_april() -> None:
+    p = period_for(date(2026, 4, 5), "bimonthly")
+    assert p == Period(label="2026-MA", start=date(2026, 3, 1), end=date(2026, 4, 30))
+
+
+def test_period_for_quarterly_q3() -> None:
+    p = period_for(date(2026, 8, 15), "quarterly")
+    assert p == Period(label="2026-Q3", start=date(2026, 7, 1), end=date(2026, 9, 30))
+
+
+def test_period_for_yearly() -> None:
+    p = period_for(date(2026, 12, 31), "yearly")
+    assert p == Period(label="2026", start=date(2026, 1, 1), end=date(2026, 12, 31))
+
+
+def test_period_for_rejects_none() -> None:
+    with pytest.raises(ValueError, match="recurrence"):
+        period_for(date(2026, 1, 1), "none")

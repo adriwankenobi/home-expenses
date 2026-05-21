@@ -34,7 +34,10 @@
   .cat-card .sub-value { font-size: 16px; font-weight: bold; color: #ddd; }
   .cat-card .sub-label { font-size: 10px; color: #aaa; text-transform: uppercase; margin-top: 2px; }
   .item-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .item-table th, .item-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #333; }
+  .item-table th, .item-table td { padding: 6px 10px; text-align: center; border-bottom: 1px solid #333; }
+  /* Description (6) and Category (8) stay left-aligned for readability. */
+  .item-table th:nth-child(6), .item-table td:nth-child(6),
+  .item-table th:nth-child(8), .item-table td:nth-child(8) { text-align: left; }
   .item-table th { color: #888; text-transform: uppercase; font-size: 11px; }
   .item-table tr.highlighted { background: #094771; }
   /* Anchors inside the items table inherit the row color so the 📎 invoice
@@ -126,7 +129,7 @@
         <td>{% if it.invoice %}{{ it.invoice.period.start }}{% endif %}</td>
         <td>{% if it.invoice %}{{ it.invoice.period.end }}{% endif %}</td>
         <td></td>
-        <td>{% if it.invoice %}{{ it.invoice.invoice_date }}{% endif %}</td>
+        <td>{% if it.invoice %}{{ it.invoice.invoice_date }}{% else %}&mdash;{% endif %}</td>
         <td>{{ it.transaction.date }}</td>
         <td>{{ it.transaction.description }}</td>
         <td>{{ it.transaction.amount }}</td>
@@ -160,7 +163,7 @@
     // so every section (cards, donut, monthly bars, timeline) shares the
     // same color sequence. Fall back to sorted unique categories from the
     // items if no config info is available.
-    let cats = Object.keys(data.categories || {});
+    let cats = Object.keys(data.categories_by_name || {});
     if (cats.length === 0) {
       cats = Array.from(new Set(allItems.map(it => it.category))).sort();
     }
@@ -174,7 +177,7 @@
   // config-order info is available.
   function categoriesPresent(items) {
     const present = new Set(items.map(it => it.category));
-    const configOrder = Object.keys(data.categories || {});
+    const configOrder = Object.keys(data.categories_by_name || {});
     if (configOrder.length > 0) {
       return configOrder.filter(c => present.has(c));
     }
@@ -257,14 +260,17 @@
   // naturally without a branch. Examples: quarterly 2026-03-31 → Q1 2026;
   // quarterly 2026-04-15 → Q1 2026; monthly 2026-04-30 → April; monthly
   // 2026-05-01 → April; yearly 2026-12-31 → 2026; yearly 2026-04-15 →
-  // 2025. Returns null for "none". invoice_date is the last day of the
-  // synthetic period.
-  function syntheticPeriodFor(paymentIso, recurrence) {
+  // 2025. When containsPayment is true, use the period containing the
+  // payment date; when false, use the period before it. Returns null for
+  // "none". invoice_date is the last day of the synthetic period.
+  function syntheticPeriodFor(paymentIso, recurrence, containsPayment) {
     if (!recurrence || recurrence === 'none') return null;
     const d = new Date(paymentIso + 'T00:00:00');
-    d.setDate(d.getDate() + 1);
+    if (!containsPayment) {
+      d.setDate(d.getDate() + 1);
+    }
     const y = d.getFullYear();
-    const m = d.getMonth(); // 0-based
+    const m = d.getMonth();
 
     let width, containingStartMonth;
     switch (recurrence) {
@@ -274,7 +280,9 @@
       case 'yearly':    width = 12; containingStartMonth = 0; break;
       default: return null;
     }
-    let startMonth = containingStartMonth - width;
+    let startMonth = containsPayment
+      ? containingStartMonth
+      : containingStartMonth - width;
     let startYear = y;
     if (startMonth < 0) { startMonth += 12; startYear -= 1; }
     const endMonth = startMonth + width - 1;
@@ -285,9 +293,10 @@
   }
 
   // Return the period/invoice info to DISPLAY for an item: real values if
-  // present (invoice attached), otherwise synthesized from the category's
-  // recurrence. Returns null if there's nothing to display (no invoice and
-  // recurrence is 'none' or unknown).
+  // present (invoice attached), otherwise synthesized. Per-item
+  // display_recurrence / display_period_contains_payment overrides take
+  // precedence over the category-level defaults. Returns null if there's
+  // nothing to display (no invoice and recurrence is 'none' or unknown).
   function displayInfoFor(it) {
     if (it.period_start && it.period_end && it.invoice_date) {
       return {
@@ -297,7 +306,13 @@
         synthetic: false,
       };
     }
-    const synth = syntheticPeriodFor(it.date, data.categories[it.category]);
+    const meta = data.categories_by_name[it.category];
+    const recurrence = it.display_recurrence || (meta && meta.recurrence);
+    const containsPayment = (it.display_period_contains_payment !== null
+                              && it.display_period_contains_payment !== undefined)
+      ? it.display_period_contains_payment
+      : (meta && meta.period_contains_payment);
+    const synth = syntheticPeriodFor(it.date, recurrence, containsPayment);
     if (synth === null) return null;
     return { ...synth, synthetic: true };
   }
@@ -353,13 +368,12 @@
   }
 
   function renderCategoryBreakdown(items) {
-    // Per-category KPI cards (one card per category) styled like the main
-    // KPI strip. Total amount is the big number; items count and avg lag
+    // Per-category KPI cards (one card per category name) styled like the
+    // main KPI strip. Total amount is the big number; items count and avg lag
     // appear as small uppercase meta lines below.
     const byCat = {};
     items.forEach(it => {
-      byCat[it.category] = byCat[it.category]
-        || { total: 0, count: 0, lags: [] };
+      byCat[it.category] = byCat[it.category] || { total: 0, count: 0, lags: [] };
       const c = byCat[it.category];
       c.total += parseFloat(it.amount);
       c.count += 1;
@@ -410,13 +424,13 @@
       let periodStartCell = '';
       let periodEndCell = '';
       let periodLengthCell = '';
-      let invoiceDateCell = '';
+      let invoiceDateCell = '—';
       if (info) {
         const d = daysInclusive(info.period_start, info.period_end);
         periodStartCell = info.period_start;
         periodEndCell = info.period_end;
         periodLengthCell = d + ' day' + (d === 1 ? '' : 's');
-        invoiceDateCell = info.invoice_date;
+        invoiceDateCell = it.invoice_id ? info.invoice_date : '—';
       }
       tr.innerHTML =
         '<td>' + periodStartCell + '</td>' +
@@ -444,22 +458,23 @@
   // click can jump to them in the items list.
   function renderMonthlyChart(divId, items, attribute) {
     const monthSet = new Set();
-    const byCat = {};       // byCat[cat][month] = summed amount
+    const byCat = {};        // byCat[cat][month] = summed amount
     const cellIndices = {}; // cellIndices[cat][month] = [item indices]
     items.forEach((it, i) => {
+      const cat = it.category;
       const contrib = attribute(it, i);
       for (const m in contrib) {
         monthSet.add(m);
-        byCat[it.category] = byCat[it.category] || {};
-        byCat[it.category][m] = (byCat[it.category][m] || 0) + contrib[m];
-        cellIndices[it.category] = cellIndices[it.category] || {};
-        cellIndices[it.category][m] = cellIndices[it.category][m] || [];
-        cellIndices[it.category][m].push(i);
+        byCat[cat] = byCat[cat] || {};
+        byCat[cat][m] = (byCat[cat][m] || 0) + contrib[m];
+        cellIndices[cat] = cellIndices[cat] || {};
+        cellIndices[cat][m] = cellIndices[cat][m] || [];
+        cellIndices[cat][m].push(i);
       }
     });
     const months = Array.from(monthSet).sort();
     const allCats = categoriesPresent(items);
-    const cats = allCats.filter(c => byCat[c] !== undefined);
+    const cats = allCats.filter(cat => byCat[cat] !== undefined);
     const traces = cats.map(cat => ({
       x: months,
       y: months.map(m => byCat[cat][m] || 0),
@@ -510,10 +525,10 @@
     const labels = categoriesPresent(items);
     Plotly.newPlot('chart-donut', [{
       labels: labels,
-      values: labels.map(c => byCat[c]),
+      values: labels.map(cat => byCat[cat]),
       type: 'pie',
       hole: 0.5,
-      marker: { colors: labels.map(c => colorMap[c]) },
+      marker: { colors: labels.map(cat => colorMap[cat]) },
       sort: false,
       hovertemplate:
         '<b>%{label}</b><br>' + fmtAmountTemplate('%{value:.2f}') + ' (%{percent})<extra></extra>',
@@ -528,8 +543,8 @@
     //   - open diamond at invoice_date
     //   - filled dot at payment_date (the ONLY hoverable element)
     // Every element of an item uses the item's category color. Traces are
-    // grouped by category (5 traces per category) because Plotly applies one
-    // color per trace; legendgroup keeps a category's 5 traces in sync.
+    // grouped by category name (5 traces per category) because Plotly applies
+    // one color per trace; legendgroup keeps a category's 5 traces in sync.
     const cats = categoriesPresent(items);
     const catData = {};
     cats.forEach(cat => {
@@ -551,7 +566,8 @@
       .forEach((origIdx, pos) => { yPos[origIdx] = pos; });
 
     items.forEach((it, i) => {
-      const cd = catData[it.category];
+      const cat = it.category;
+      const cd = catData[cat];
       const y = yPos[i];
       if (it.period_start && it.period_end) {
         cd.periodLineX.push(it.period_start, it.period_end, null);
@@ -564,8 +580,10 @@
       if (it.invoice_date) {
         cd.waitLineX.push(it.invoice_date, it.date, null);
         cd.waitLineY.push(y, y, null);
-        cd.invX.push(it.invoice_date);
-        cd.invY.push(y);
+        if (it.invoice_id) {
+          cd.invX.push(it.invoice_date);
+          cd.invY.push(y);
+        }
       }
       cd.payX.push(it.date);
       cd.payY.push(y);
@@ -579,10 +597,10 @@
           ? 'Period: ' + it.period_start + ' → ' + it.period_end +
             ' (' + periodDays + ' day' + (periodDays === 1 ? '' : 's') + ')<br>'
           : '') +
-        (it.invoice_date ? 'Invoice: ' + it.invoice_date + '<br>' : '') +
+        (it.invoice_id ? 'Invoice: ' + it.invoice_date + '<br>' : '') +
         'Payment: ' + it.date + '<br>' +
         formatAmount(it.amount) +
-        (lag !== null ? '<br>Lag (period→payment): ' + lag + ' days' : '')
+        (lag !== null ? '<br>Lag: ' + lag + ' days' : '')
       );
     });
 

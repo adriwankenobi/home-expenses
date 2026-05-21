@@ -17,6 +17,27 @@ cp config.example.json config.json
 
 `config.json` is gitignored.
 
+## Per-transaction display overrides via `manual_mappings`
+
+`manual_mappings` is the last-resort routing override: when a transaction's full description doesn't match any pattern, the matcher looks it up here. Each entry is an object with at least a `category` field; optional `recurrence` and `period_contains_payment` fields override the category's display semantics **for just that item**.
+
+```jsonc
+"manual_mappings": {
+  "TRANSF ABUELA REGALO": {
+    "category": "gifts"
+  },
+  "UNIQUE ANNUAL CHARGE 2024-09-15": {
+    "category": "sharedQuarterly1",
+    "recurrence": "yearly",
+    "period_contains_payment": true
+  }
+}
+```
+
+Use this when a single transaction should be aggregated under an existing category but rendered with different period semantics — e.g., a yearly one-off fee that should display under your quarterly "WaterBill" card with a yearly period bar. The category remains quarterly (its recurrence checks are unaffected); just this item gets the override.
+
+If `period_contains_payment: true` is set, the effective recurrence (mapping's `recurrence` if present, otherwise the referenced category's) must not be `"none"`.
+
 ## Run
 
 ```bash

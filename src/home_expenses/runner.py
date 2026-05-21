@@ -10,7 +10,7 @@ from pathlib import Path
 from home_expenses.cache import ExtractionCache, file_sha256
 from home_expenses.config import Config
 from home_expenses.matcher import match
-from home_expenses.models import Alert, BankStatementFile, Invoice
+from home_expenses.models import Alert, BankStatementFile, Invoice, ReportCategory
 from home_expenses.parsers.bank_statement import parse_bank_statement
 from home_expenses.parsers.invoices import get_spec
 from home_expenses.parsers.invoices.pepeenergy import InvoiceParseError
@@ -63,7 +63,14 @@ def run_report(config: Config, output_path: Path, today: date) -> RunSummary:
         alerts=all_alerts,
         currency=config.currency,
         generated_at=today,
-        categories={name: cat.recurrence for name, cat in config.categories.items()},
+        categories_by_name={
+            name: ReportCategory(
+                name=name,
+                recurrence=cat.recurrence,
+                period_contains_payment=cat.period_contains_payment,
+            )
+            for name, cat in config.categories.items()
+        },
     )
     render_report(model, output_path)
     cache.flush()

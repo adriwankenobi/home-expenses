@@ -40,13 +40,21 @@ def _serialize_model(model: ReportModel) -> str:
         "generated_at": model.generated_at.isoformat(),
         "currency": model.currency,
         "years": list(model.years),
-        "categories": dict(model.categories),
+        "categories_by_name": {
+            name: {
+                "recurrence": rc.recurrence,
+                "period_contains_payment": rc.period_contains_payment,
+            }
+            for name, rc in model.categories_by_name.items()
+        },
         "items": [
             {
                 "date": it.transaction.date.isoformat(),
                 "description": it.transaction.description,
                 "amount": str(it.transaction.amount),
                 "category": it.category,
+                "display_recurrence": it.display_recurrence,
+                "display_period_contains_payment": it.display_period_contains_payment,
                 "invoice_path": (it.invoice.source_path if it.invoice is not None else None),
                 "invoice_id": (it.invoice.invoice_id if it.invoice is not None else None),
                 "invoice_date": (
