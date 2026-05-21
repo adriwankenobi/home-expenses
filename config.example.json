@@ -27,6 +27,12 @@
       "recurrence": "quarterly",
       "patterns": ["IBI INVOICE"]
     },
+    "Aguas Y Basuras": {
+      "invoice_folder": "/path/to/invoices/aguasYBasuras",
+      "invoice_parser": "aguasYBasuras",
+      "recurrence": "quarterly",
+      "patterns": ["WATER AND WASTE INVOICE"]
+    },
     "monthly": {
       "patterns": ["MONTHLY INVOICE"],
       "recurrence": "monthly"
