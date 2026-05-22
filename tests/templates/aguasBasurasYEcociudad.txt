@@ -97,7 +97,7 @@ Nivel de Residuos X
 Saneamiento
 B.O.P. Nº XXX, DD-MM-YYYY B.O.P. Nº XXX, DD-MM-YYYY
 CUOTA FIJA ECOCIUDAD ZARAGOZA
-Periodo facturado del DD-MM-YYYY al DD-MM-YYYY
+Periodo facturado del DD-MM-YY al DD-MM-YY
 FACTURA Nº XXXXXXXXXXXXXXXXXXXXXXX Días €/día Colectivo Tarifa bonif. Importe (€)
 XXX XX,XX XX,XX
 TOTAL SANEAMIENTO XX,XX CUOTA VARIABLE ECOCIUDAD ZARAGOZA

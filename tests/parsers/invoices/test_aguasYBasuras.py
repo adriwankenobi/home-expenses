@@ -13,7 +13,7 @@ from home_expenses.parsers.invoices.aguasYBasuras import (
     parse_text,
 )
 
-TEMPLATE = Path(__file__).resolve().parents[2] / "templates" / "aguasYBasuras.txt"
+TEMPLATE = Path(__file__).resolve().parents[2] / "templates" / "aguasBasurasYEcociudad.txt"
 
 
 def _load_template() -> str:

@@ -33,6 +33,12 @@
       "recurrence": "quarterly",
       "patterns": ["WATER AND WASTE INVOICE"]
     },
+    "Ecociudad": {
+      "invoice_folder": "/path/to/invoices/ecociudad",
+      "invoice_parser": "ecociudad",
+      "recurrence": "quarterly",
+      "patterns": ["SANITATION INVOICE"]
+    },
     "monthly": {
       "patterns": ["MONTHLY INVOICE"],
       "recurrence": "monthly"
