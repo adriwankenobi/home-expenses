@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
 import plotly  # type: ignore[import-untyped]
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from home_expenses.models import ReportModel
+from home_expenses.models import Item, ReportModel
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -20,22 +21,38 @@ def render_report(model: ReportModel, output_path: Path) -> None:
         autoescape=select_autoescape(["html", "j2"]),
     )
     template = env.get_template("report.html.j2")
+    sorted_items = sorted(model.items, key=_item_sort_key, reverse=True)
     html = template.render(
         model=model,
+        sorted_items=sorted_items,
         data_json=_serialize_model(model),
         plotly_js=plotly.offline.get_plotlyjs(),
     )
     output_path.write_text(html, encoding="utf-8")
 
 
+def _item_sort_key(item: Item) -> tuple[date, date, date]:
+    """Sort key: transaction.date, then invoice_date, then period.start.
+
+    With ``reverse=True`` applied at the call site, items with no invoice
+    (or no invoice_date) get ``date.min`` as their tie-break value, which
+    flips to "sorts last within the txn-date group" under reverse order.
+    """
+    inv = item.invoice
+    inv_date = inv.invoice_date if inv is not None and inv.invoice_date is not None else date.min
+    period_start = inv.period.start if inv is not None else date.min
+    return (item.transaction.date, inv_date, period_start)
+
+
 def _serialize_model(model: ReportModel) -> str:
     """Serialize the model into a JSON blob for in-page JS to consume.
 
-    Items are sorted by transaction date in descending order so that the
-    JSON's index order matches the server-rendered table and downstream
-    Plotly customdata references stay consistent.
+    Items are sorted by transaction date in descending order, with ties
+    broken by invoice_date then period.start (both desc, missing values
+    sort last). This keeps the JSON's index order aligned with the
+    server-rendered table and Plotly customdata references.
     """
-    sorted_items = sorted(model.items, key=lambda it: it.transaction.date, reverse=True)
+    sorted_items = sorted(model.items, key=_item_sort_key, reverse=True)
     payload = {
         "generated_at": model.generated_at.isoformat(),
         "currency": model.currency,

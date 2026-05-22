@@ -124,7 +124,7 @@
       </tr>
     </thead>
     <tbody id="items-body">
-      {% for it in model.items|sort(attribute='transaction.date', reverse=True) %}
+      {% for it in sorted_items %}
       <tr id="item-{{ loop.index0 }}" data-item-id="{{ loop.index0 }}">
         <td>{% if it.invoice %}{{ it.invoice.period.start }}{% endif %}</td>
         <td>{% if it.invoice %}{{ it.invoice.period.end }}{% endif %}</td>

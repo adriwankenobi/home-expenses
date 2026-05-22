@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
 from home_expenses.models import Alert, AlertKind, ReportCategory
 from home_expenses.report.model import build_report_model
-from home_expenses.report.render import render_report
+from home_expenses.report.render import _serialize_model, render_report
 from tests.factories import make_invoice, make_item, make_transaction
 
 
@@ -152,6 +153,73 @@ def test_manual_mapping_overrides_appear_in_data_block(tmp_path: Path) -> None:
         '"display_period_contains_payment":true' in html
         or '"display_period_contains_payment": true' in html
     )
+
+
+def test_items_sorted_by_txn_date_then_invoice_date_then_period_start() -> None:
+    # All five items share the same transaction date except E (one day earlier),
+    # forcing the tie-break chain to fully exercise: by transaction.date desc,
+    # then by invoice.invoice_date desc (None last), then by period.start desc.
+    txn_same = make_transaction(date=date(2026, 5, 18), amount=Decimal("10.00"))
+    txn_earlier = make_transaction(date=date(2026, 5, 17), amount=Decimal("10.00"))
+
+    inv_later = make_invoice(
+        invoice_date=date(2026, 5, 15),
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        content_hash="hLater",
+        source_path="/tmp/later.pdf",
+    )
+    inv_mid_newer_period = make_invoice(
+        invoice_date=date(2026, 5, 10),
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        content_hash="hMidNew",
+        source_path="/tmp/mid_new.pdf",
+    )
+    inv_mid_older_period = make_invoice(
+        invoice_date=date(2026, 5, 10),
+        period_start=date(2026, 3, 1),
+        period_end=date(2026, 3, 31),
+        content_hash="hMidOld",
+        source_path="/tmp/mid_old.pdf",
+    )
+
+    item_d_later_inv = make_item(transaction=txn_same, category="c", invoice=inv_later)
+    item_b_newer_period = make_item(
+        transaction=txn_same, category="c", invoice=inv_mid_newer_period
+    )
+    item_c_older_period = make_item(
+        transaction=txn_same, category="c", invoice=inv_mid_older_period
+    )
+    item_a_no_invoice = make_item(transaction=txn_same, category="c", invoice=None)
+    item_e_earlier_txn = make_item(transaction=txn_earlier, category="c", invoice=inv_later)
+
+    # Pass in an arbitrary order to confirm the sort actually runs.
+    items = [
+        item_e_earlier_txn,
+        item_a_no_invoice,
+        item_c_older_period,
+        item_b_newer_period,
+        item_d_later_inv,
+    ]
+    model = build_report_model(
+        items=items,
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={
+            "c": ReportCategory(name="c", recurrence="monthly", period_contains_payment=False),
+        },
+    )
+    payload = json.loads(_serialize_model(model))
+    paths_in_order = [it["invoice_path"] for it in payload["items"]]
+    assert paths_in_order == [
+        "/tmp/later.pdf",      # txn 5/18, invoice 5/15
+        "/tmp/mid_new.pdf",    # txn 5/18, invoice 5/10, period 4/1
+        "/tmp/mid_old.pdf",    # txn 5/18, invoice 5/10, period 3/1
+        None,                  # txn 5/18, no invoice (last in tie group)
+        "/tmp/later.pdf",      # txn 5/17 (earlier txn, sorts last overall)
+    ]
 
 
 def test_items_table_shows_long_dash_when_no_invoice(tmp_path: Path) -> None:
