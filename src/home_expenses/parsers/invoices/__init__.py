@@ -13,6 +13,7 @@ from home_expenses.parsers.invoices import (
     ibi,
     pepeenergy,
     pepephone,
+    ullastresAguaYGas,
 )
 
 ParseFn = Callable[[Path], Invoice]
@@ -45,6 +46,10 @@ _REGISTRY: dict[str, ParserSpec] = {
     pepephone.PARSER_NAME: ParserSpec(
         parse=pepephone.parse,
         matches_filename=pepephone.matches_filename,
+    ),
+    ullastresAguaYGas.PARSER_NAME: ParserSpec(
+        parse=ullastresAguaYGas.parse,
+        matches_filename=ullastresAguaYGas.matches_filename,
     ),
 }
 

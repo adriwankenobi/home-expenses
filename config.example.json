@@ -6,7 +6,7 @@
   },
   "match_window_days_default": 30,
   "categories": {
-    "PepeEnergy": {
+    "Energy": {
       "invoice_folder": "/path/to/invoices/pepeenergy",
       "invoice_parser": "pepeenergy",
       "recurrence": "monthly",
@@ -14,7 +14,7 @@
       "match_window_days": 15,
       "start_date": "2024-01"
     },
-    "PepePhone": {
+    "Mobile Phone": {
       "invoice_folder": "/path/to/invoices/pepephone",
       "invoice_parser": "pepephone",
       "recurrence": "none",
@@ -27,17 +27,29 @@
       "recurrence": "quarterly",
       "patterns": ["IBI INVOICE"]
     },
-    "Aguas Y Basuras": {
+    "Water and Waste": {
       "invoice_folder": "/path/to/invoices/aguasYBasuras",
       "invoice_parser": "aguasYBasuras",
       "recurrence": "quarterly",
       "patterns": ["WATER AND WASTE INVOICE"]
     },
-    "Ecociudad": {
+    "Sanitation": {
       "invoice_folder": "/path/to/invoices/ecociudad",
       "invoice_parser": "ecociudad",
       "recurrence": "quarterly",
       "patterns": ["SANITATION INVOICE"]
+    },
+    "Hot Water": {
+      "invoice_folder": "/path/to/invoices/ullastresAgua",
+      "invoice_parser": "ullastresAguaYGas",
+      "recurrence": "monthly",
+      "patterns": ["HOT WATER INVOICE"]
+    },
+    "Heating": {
+      "invoice_folder": "/path/to/invoices/ullastresGas",
+      "invoice_parser": "ullastresAguaYGas",
+      "recurrence": "monthly",
+      "patterns": ["HEATING INVOICE"]
     },
     "monthly": {
       "patterns": ["MONTHLY INVOICE"],
