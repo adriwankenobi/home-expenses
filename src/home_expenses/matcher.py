@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
+from decimal import Decimal
+from itertools import combinations
 
 from home_expenses.config import Config, SplitGroup
 from home_expenses.models import (
@@ -36,18 +38,36 @@ def match(
     alerts: list[Alert] = []
     unmatched: list[Transaction] = []
     deferred: dict[int, tuple[SplitGroup, list[Transaction]]] = {}
+    # Resolve same-amount ambiguity globally before the per-transaction pass.
+    # Maps id(txn) -> (category, invoice) for transactions whose match was
+    # determined by chronological zip across a (category, amount) bucket.
+    pre_assigned = _resolve_chronological_buckets(transactions, inv_lists, config)
+    # Reify chrono-zip's promises into `consumed` before the main loop iterates.
+    # Without this, a not-pre-assigned txn appearing earlier in input order than
+    # its pre-assigned peers would see their invoices as still available and
+    # could spuriously emit AMBIGUOUS_INVOICE_MATCH or steal an invoice.
+    for cat_name, inv in pre_assigned.values():
+        consumed.add((cat_name, inv.content_hash))
 
     for txn in transactions:
         group = _split_group_for(txn, config)
         if group is not None:
             if group.has_invoices:
                 allowed = frozenset(m.name for m in group.members)
-                cat_name, invoice = _try_invoice_match(
+                chrono = pre_assigned.get(id(txn))
+                if chrono is not None and chrono[0] in allowed:
+                    chrono_cat, chrono_inv = chrono
+                    consumed.add((chrono_cat, chrono_inv.content_hash))
+                    items.append(
+                        Item(transaction=txn, category=chrono_cat, invoice=chrono_inv)
+                    )
+                    continue
+                matched_cat, matched_inv = _try_invoice_match(
                     txn, inv_lists, config, alerts, consumed, restrict_to=allowed
                 )
-                if invoice is not None and cat_name is not None:
-                    consumed.add((cat_name, invoice.content_hash))
-                    items.append(Item(transaction=txn, category=cat_name, invoice=invoice))
+                if matched_inv is not None and matched_cat is not None:
+                    consumed.add((matched_cat, matched_inv.content_hash))
+                    items.append(Item(transaction=txn, category=matched_cat, invoice=matched_inv))
                     continue
                 for m in group.members:
                     if m.start_date is None or txn.date >= m.start_date:
@@ -71,12 +91,10 @@ def match(
             continue
 
         # Existing logic for non-split-group transactions.
-        category_name, invoice = _try_invoice_match(txn, inv_lists, config, alerts, consumed)
-        if invoice is not None and category_name is not None:
+        chrono = pre_assigned.get(id(txn))
+        if chrono is not None:
+            category_name, invoice = chrono
             consumed.add((category_name, invoice.content_hash))
-            # If a manual mapping pinned this txn to that category, carry
-            # its display overrides (recurrence / period_contains_payment)
-            # through to the resulting Item.
             mapping = config.manual_mappings.get(txn.description)
             items.append(
                 Item(
@@ -91,6 +109,34 @@ def match(
                     display_period_contains_payment=(
                         mapping.period_contains_payment
                         if mapping is not None and mapping.category == category_name
+                        else None
+                    ),
+                )
+            )
+            continue
+
+        matched_cat, matched_inv = _try_invoice_match(
+            txn, inv_lists, config, alerts, consumed
+        )
+        if matched_inv is not None and matched_cat is not None:
+            consumed.add((matched_cat, matched_inv.content_hash))
+            # If a manual mapping pinned this txn to that category, carry
+            # its display overrides (recurrence / period_contains_payment)
+            # through to the resulting Item.
+            mapping = config.manual_mappings.get(txn.description)
+            items.append(
+                Item(
+                    transaction=txn,
+                    category=matched_cat,
+                    invoice=matched_inv,
+                    display_recurrence=(
+                        mapping.recurrence
+                        if mapping is not None and mapping.category == matched_cat
+                        else None
+                    ),
+                    display_period_contains_payment=(
+                        mapping.period_contains_payment
+                        if mapping is not None and mapping.category == matched_cat
                         else None
                     ),
                 )
@@ -249,6 +295,127 @@ def _split_group_for(
     return None
 
 
+def _resolve_chronological_buckets(
+    transactions: list[Transaction],
+    inv_lists: Mapping[str, list[Invoice]],
+    config: Config,
+) -> dict[int, tuple[str, Invoice]]:
+    """Resolve same-amount ambiguity via min-lag chronological pairing.
+
+    For each (category, amount) bucket with ≥2 transactions and ≥2 invoices,
+    pick min(N_txns, N_invs) pairs that minimize total |txn.date − inv anchor|
+    subject to every pair satisfying the category's window. The chosen pairs
+    are always a sorted-zip of the picked subsets — for a fixed subset, sorted
+    pairing is optimal (for txns t1≤t2 and invs i1≤i2, swapping to (t1→i1,
+    t2→i2) never increases total lag and never widens any individual pair).
+    The remaining items on the longer side stay unassigned and fall through
+    (txns to per-transaction matching, invoices to the orphan check).
+    """
+    assignments: dict[int, tuple[str, Invoice]] = {}
+    for cat_name, invs in inv_lists.items():
+        cat = config.categories.get(cat_name)
+        if cat is None:
+            continue
+        window = (
+            cat.match_window_days
+            if cat.match_window_days is not None
+            else config.match_window_days_default
+        )
+        cat_txns: list[Transaction] = []
+        for txn in transactions:
+            desc_upper = txn.description.upper()
+            mapping = config.manual_mappings.get(txn.description)
+            pattern_hit = any(p.upper() in desc_upper for p in cat.patterns)
+            mapped_here = mapping is not None and mapping.category == cat_name
+            if pattern_hit or mapped_here:
+                cat_txns.append(txn)
+        buckets: dict[Decimal, tuple[list[Transaction], list[Invoice]]] = {}
+        for t in cat_txns:
+            buckets.setdefault(t.amount, ([], []))[0].append(t)
+        for inv in invs:
+            if inv.amount in buckets:
+                buckets[inv.amount][1].append(inv)
+        for txns, candidate_invs in buckets.values():
+            # Exclude transactions already assigned by an earlier category's
+            # iteration. Without this, a split group whose invoices are
+            # spread across categories would have each category retry
+            # positions 0..N-1 of the sorted-txn list, silently failing
+            # the window check for later categories whose invoices are
+            # newer than the earliest transactions.
+            available_txns = [t for t in txns if id(t) not in assignments]
+            if len(available_txns) < 2 or len(candidate_invs) < 2:
+                continue
+            pairs = _min_lag_pairing(available_txns, candidate_invs, window)
+            if pairs is not None:
+                for t, i in pairs:
+                    assignments[id(t)] = (cat_name, i)
+    return assignments
+
+
+def _min_lag_pairing(
+    txns: list[Transaction],
+    invs: list[Invoice],
+    window: int,
+) -> list[tuple[Transaction, Invoice]] | None:
+    sorted_txns = sorted(txns, key=lambda t: t.date)
+    sorted_invs = sorted(invs, key=_invoice_sort_key)
+    n = min(len(sorted_txns), len(sorted_invs))
+    best_pairs: list[tuple[Transaction, Invoice]] | None = None
+    best_sum = -1
+    if len(sorted_txns) <= len(sorted_invs):
+        # Choose which n invoices to pair with all txns (sorted-zip within
+        # the subset is optimal — see docstring of _resolve_chronological_buckets).
+        for idx_subset in combinations(range(len(sorted_invs)), n):
+            inv_sub = [sorted_invs[i] for i in idx_subset]
+            pairs = list(zip(sorted_txns, inv_sub, strict=True))
+            if not all(_pair_in_window(t, i, window) for t, i in pairs):
+                continue
+            total = sum(_pair_lag(t, i) for t, i in pairs)
+            if best_pairs is None or total < best_sum:
+                best_sum = total
+                best_pairs = pairs
+    else:
+        # Choose which n txns to pair with all invoices (symmetric case).
+        for idx_subset in combinations(range(len(sorted_txns)), n):
+            tx_sub = [sorted_txns[i] for i in idx_subset]
+            pairs = list(zip(tx_sub, sorted_invs, strict=True))
+            if not all(_pair_in_window(t, i, window) for t, i in pairs):
+                continue
+            total = sum(_pair_lag(t, i) for t, i in pairs)
+            if best_pairs is None or total < best_sum:
+                best_sum = total
+                best_pairs = pairs
+    return best_pairs
+
+
+def _pair_lag(txn: Transaction, inv: Invoice) -> int:
+    if inv.invoice_date is not None:
+        return abs((txn.date - inv.invoice_date).days)
+    if txn.date < inv.period.start:
+        return (inv.period.start - txn.date).days
+    if txn.date > inv.period.end:
+        return (txn.date - inv.period.end).days
+    return 0
+
+
+def _invoice_sort_key(inv: Invoice) -> tuple[date, date]:
+    # Primary key: invoice_date (or period.start when no invoice_date).
+    # Secondary key: period.start, so invoices sharing an invoice_date sort
+    # by the period they cover instead of input order. Without this the
+    # chronological-zip pairing would drift between runs based on filesystem
+    # load order whenever multiple invoices share an invoice_date.
+    primary = inv.invoice_date if inv.invoice_date is not None else inv.period.start
+    return (primary, inv.period.start)
+
+
+def _pair_in_window(txn: Transaction, inv: Invoice, window: int) -> bool:
+    if inv.invoice_date is not None:
+        delta = (txn.date - inv.invoice_date).days
+        return 0 <= delta <= window
+    latest = inv.period.end + timedelta(days=window)
+    return inv.period.start <= txn.date <= latest
+
+
 def _try_invoice_match(
     txn: Transaction,
     inv_lists: Mapping[str, list[Invoice]],
@@ -282,6 +449,11 @@ def _try_invoice_match(
         for inv in invs:
             if inv.amount != txn.amount:
                 continue
+            # Skip invoices already claimed by an earlier transaction (either
+            # directly matched or pre-assigned via chronological zip). Without
+            # this guard a single invoice could be paired with multiple txns.
+            if (cat_name, inv.content_hash) in consumed:
+                continue
             if inv.invoice_date is not None:
                 delta = (txn.date - inv.invoice_date).days
                 if 0 <= delta <= window:
@@ -297,10 +469,15 @@ def _try_invoice_match(
         return None, None
     if len(candidates) == 1:
         return candidates[0]
+    candidate_str = ", ".join(f"{c}:{i.source_path}" for c, i in candidates)
     alerts.append(
         Alert(
             kind=AlertKind.AMBIGUOUS_INVOICE_MATCH,
-            message=f"transaction has multiple invoice candidates: {txn.description}",
+            message=(
+                f"transaction {txn.date.isoformat()} '{txn.description}' "
+                f"(amount={txn.amount}) has {len(candidates)} invoice candidates: "
+                f"{candidate_str}"
+            ),
             payload={
                 "date": txn.date.isoformat(),
                 "description": txn.description,

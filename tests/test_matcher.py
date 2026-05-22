@@ -92,11 +92,13 @@ def test_ambiguous_invoice_match_falls_through_to_pattern() -> None:
         amount=Decimal("11.11"),
         invoice_date=date(2026, 5, 5),
         content_hash="h1",
+        source_path="/tmp/inv1.pdf",
     )
     inv2 = make_invoice(
         amount=Decimal("11.11"),
         invoice_date=date(2026, 5, 10),
         content_hash="h2",
+        source_path="/tmp/inv2.pdf",
     )
     cfg = _config(
         categories={
@@ -112,11 +114,385 @@ def test_ambiguous_invoice_match_falls_through_to_pattern() -> None:
     result = match([txn], {"electricity": [inv1, inv2]}, cfg)
     assert len(result.items) == 1
     assert result.items[0].invoice is None
-    assert any(a.kind is AlertKind.AMBIGUOUS_INVOICE_MATCH for a in result.alerts)
+    ambig = [a for a in result.alerts if a.kind is AlertKind.AMBIGUOUS_INVOICE_MATCH]
+    assert len(ambig) == 1
+    msg = ambig[0].message
+    # Message must identify the transaction (date, description, amount) and
+    # list every candidate (category + source path) so the user can resolve it.
+    assert "2026-05-18" in msg
+    assert "PEPE ENERGY INVOICE" in msg
+    assert "11.11" in msg
+    assert "/tmp/inv1.pdf" in msg
+    assert "/tmp/inv2.pdf" in msg
+    assert "electricity" in msg
     # also fires missing-invoice because pattern matched but no invoice attached
     assert any(a.kind is AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
     # Ambiguous candidates remain pending; they MUST NOT be flagged orphan.
     assert all(a.kind is not AlertKind.ORPHAN_INVOICE for a in result.alerts)
+
+
+def test_chronological_zip_resolves_same_amount_pair() -> None:
+    # Two transactions share an amount; each invoice fits the window of one
+    # transaction but the earlier invoice also fits the earlier transaction's
+    # wider window. Single-pass greedy matching would flag the earlier
+    # transaction ambiguous. Chronological zip pairs them in order.
+    tx_a = make_transaction(
+        date=date(2024, 9, 2),
+        description="CCPP INVOICE",
+        amount=Decimal("150.00"),
+    )
+    tx_b = make_transaction(
+        date=date(2024, 9, 5),
+        description="CCPP INVOICE",
+        amount=Decimal("150.00"),
+    )
+    inv_a = make_invoice(
+        amount=Decimal("150.00"),
+        invoice_date=date(2024, 4, 30),
+        period_start=date(2023, 11, 15),
+        period_end=date(2024, 2, 9),
+        content_hash="hA",
+        source_path="/tmp/invA.pdf",
+    )
+    inv_b = make_invoice(
+        amount=Decimal("150.00"),
+        invoice_date=date(2024, 7, 30),
+        period_start=date(2024, 5, 15),
+        period_end=date(2024, 7, 17),
+        content_hash="hB",
+        source_path="/tmp/invB.pdf",
+    )
+    cfg = _config(
+        categories={
+            "building": Category(
+                name="building",
+                recurrence="quarterly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("CCPP INVOICE",),
+                match_window_days=125,
+            )
+        }
+    )
+    result = match([tx_a, tx_b], {"building": [inv_a, inv_b]}, cfg)
+    assert len(result.items) == 2
+    by_txn = {item.transaction: item for item in result.items}
+    assert by_txn[tx_a].invoice is inv_a
+    assert by_txn[tx_b].invoice is inv_b
+    assert all(a.kind is not AlertKind.AMBIGUOUS_INVOICE_MATCH for a in result.alerts)
+    assert all(a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
+    assert all(a.kind is not AlertKind.ORPHAN_INVOICE for a in result.alerts)
+
+
+def test_chronological_zip_three_transactions_three_invoices() -> None:
+    # Generalisation: N>=2 case must work for any N, not just 2.
+    # Window is wide enough that each transaction in isolation would see
+    # every invoice as a candidate; only the cross-bucket chronological zip
+    # produces an unambiguous assignment.
+    txns = [
+        make_transaction(
+            date=d, description="CCPP INVOICE", amount=Decimal("99.00")
+        )
+        for d in (date(2024, 4, 1), date(2024, 7, 1), date(2024, 10, 1))
+    ]
+    invs = [
+        make_invoice(
+            amount=Decimal("99.00"),
+            invoice_date=inv_d,
+            content_hash=h,
+            source_path=p,
+        )
+        for inv_d, h, p in [
+            (date(2024, 3, 15), "h1", "/tmp/i1.pdf"),
+            (date(2024, 6, 15), "h2", "/tmp/i2.pdf"),
+            (date(2024, 9, 15), "h3", "/tmp/i3.pdf"),
+        ]
+    ]
+    cfg = _config(
+        categories={
+            "building": Category(
+                name="building",
+                recurrence="quarterly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("CCPP INVOICE",),
+                match_window_days=365,
+            )
+        }
+    )
+    result = match(txns, {"building": invs}, cfg)
+    assert len(result.items) == 3
+    pairs = {item.transaction: item.invoice for item in result.items}
+    assert pairs[txns[0]] is invs[0]
+    assert pairs[txns[1]] is invs[1]
+    assert pairs[txns[2]] is invs[2]
+    assert all(a.kind is not AlertKind.AMBIGUOUS_INVOICE_MATCH for a in result.alerts)
+
+
+def test_chronological_zip_tiebreaks_by_period_start_when_invoice_dates_equal() -> None:
+    # Two invoices share an invoice_date but cover different periods. The
+    # chronological-zip sort must break the tie by period.start so the pairing
+    # is deterministic and not dependent on filesystem/load order.
+    tx_early = make_transaction(
+        date=date(2024, 6, 1),
+        description="CCPP INVOICE",
+        amount=Decimal("50.00"),
+    )
+    tx_late = make_transaction(
+        date=date(2024, 7, 1),
+        description="CCPP INVOICE",
+        amount=Decimal("50.00"),
+    )
+    inv_late_period = make_invoice(
+        amount=Decimal("50.00"),
+        invoice_date=date(2024, 5, 30),
+        period_start=date(2024, 4, 1),
+        period_end=date(2024, 4, 30),
+        content_hash="h_late_period",
+        source_path="/tmp/inv_late.pdf",
+    )
+    inv_early_period = make_invoice(
+        amount=Decimal("50.00"),
+        invoice_date=date(2024, 5, 30),
+        period_start=date(2024, 2, 1),
+        period_end=date(2024, 2, 28),
+        content_hash="h_early_period",
+        source_path="/tmp/inv_early.pdf",
+    )
+    cfg = _config(
+        categories={
+            "building": Category(
+                name="building",
+                recurrence="monthly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("CCPP INVOICE",),
+                match_window_days=60,
+            )
+        }
+    )
+    # Pass invoices in the OPPOSITE order from period.start so a naive sort
+    # (by invoice_date only) would tie-break on input order and pair tx_early
+    # with inv_late_period. A correct sort tie-breaks on period.start.
+    result = match(
+        [tx_early, tx_late],
+        {"building": [inv_late_period, inv_early_period]},
+        cfg,
+    )
+    assert len(result.items) == 2
+    by_txn = {item.transaction: item for item in result.items}
+    assert by_txn[tx_early].invoice is inv_early_period
+    assert by_txn[tx_late].invoice is inv_late_period
+
+
+def test_chronological_zip_orphans_worst_fit_when_invoices_outnumber_txns() -> None:
+    # Real-world case: 4 invoices share an amount but only 3 txns are visible
+    # (the 4th invoice covers a billing period whose payment predates the bank
+    # statements). A naive sorted-zip from the start of both lists silently
+    # orphans the *newest* invoice, even when the *oldest* is the one without
+    # a matching txn. Min-lag assignment picks the subset of invoices whose
+    # sorted pairing minimizes total |txn.date - inv.invoice_date|, leaving
+    # the worst-fit invoice (here, the oldest) as orphan.
+    txns = [
+        make_transaction(date=d, description="CCPP INVOICE", amount=Decimal("30.00"))
+        for d in (date(2026, 3, 3), date(2026, 4, 13), date(2026, 5, 6))
+    ]
+    inv_old = make_invoice(
+        amount=Decimal("30.00"),
+        invoice_date=date(2025, 12, 1),
+        content_hash="h_old",
+        source_path="/tmp/old.pdf",
+    )
+    inv_recent = [
+        make_invoice(
+            amount=Decimal("30.00"),
+            invoice_date=d,
+            content_hash=h,
+            source_path=p,
+        )
+        for d, h, p in [
+            (date(2026, 2, 23), "h1", "/tmp/i1.pdf"),
+            (date(2026, 3, 31), "h2", "/tmp/i2.pdf"),
+            (date(2026, 4, 21), "h3", "/tmp/i3.pdf"),
+        ]
+    ]
+    cfg = _config(
+        categories={
+            "building": Category(
+                name="building",
+                recurrence="monthly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("CCPP INVOICE",),
+                match_window_days=130,
+            )
+        }
+    )
+    result = match(txns, {"building": [inv_old, *inv_recent]}, cfg)
+    by_txn = {item.transaction: item for item in result.items}
+    assert by_txn[txns[0]].invoice is inv_recent[0]
+    assert by_txn[txns[1]].invoice is inv_recent[1]
+    assert by_txn[txns[2]].invoice is inv_recent[2]
+    orphans = [a for a in result.alerts if a.kind is AlertKind.ORPHAN_INVOICE]
+    assert len(orphans) == 1
+    assert orphans[0].payload["source_path"] == "/tmp/old.pdf"
+
+
+def test_invoice_never_matched_to_more_than_one_transaction() -> None:
+    # Three transactions share an amount/category but only two invoices exist.
+    # Chronological zip pairs the first two transactions with the two invoices;
+    # the third transaction's _try_invoice_match must NOT claim a third "match"
+    # by re-using an already-assigned invoice.
+    txns = [
+        make_transaction(
+            date=d, description="CCPP INVOICE", amount=Decimal("100.00")
+        )
+        for d in (date(2024, 1, 10), date(2024, 2, 10), date(2024, 2, 15))
+    ]
+    invs = [
+        make_invoice(
+            amount=Decimal("100.00"),
+            invoice_date=inv_d,
+            content_hash=h,
+            source_path=p,
+        )
+        for inv_d, h, p in [
+            (date(2024, 1, 1), "h1", "/tmp/i1.pdf"),
+            (date(2024, 2, 1), "h2", "/tmp/i2.pdf"),
+        ]
+    ]
+    cfg = _config(
+        categories={
+            "building": Category(
+                name="building",
+                recurrence="monthly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("CCPP INVOICE",),
+                match_window_days=20,
+            )
+        }
+    )
+    result = match(txns, {"building": invs}, cfg)
+    # Each invoice may appear in at most one item.
+    invoices_used = [item.invoice for item in result.items if item.invoice is not None]
+    assert len(invoices_used) == len(set(id(i) for i in invoices_used)), (
+        f"invoice matched to multiple transactions: {invoices_used}"
+    )
+
+
+def test_chronological_zip_reserves_invoices_before_main_loop_runs() -> None:
+    # Real-world ordering bug: when a not-pre-assigned txn appears EARLIER in
+    # the input list than the pre-assigned txns whose invoices it would also
+    # match within the window, per-txn matching saw those invoices as still
+    # available (consumed was populated lazily during the main loop) and
+    # emitted AMBIGUOUS_INVOICE_MATCH. The chrono-zip promise must be reified
+    # into `consumed` BEFORE the main loop iterates.
+    txn_late = make_transaction(
+        date=date(2025, 6, 1),
+        description="CCPP INVOICE",
+        amount=Decimal("35.00"),
+    )
+    txn_early1 = make_transaction(
+        date=date(2025, 1, 20),
+        description="CCPP INVOICE",
+        amount=Decimal("35.00"),
+    )
+    txn_early2 = make_transaction(
+        date=date(2025, 3, 20),
+        description="CCPP INVOICE",
+        amount=Decimal("35.00"),
+    )
+    inv1 = make_invoice(
+        amount=Decimal("35.00"),
+        invoice_date=date(2025, 1, 15),
+        content_hash="h1",
+        source_path="/tmp/i1.pdf",
+    )
+    inv2 = make_invoice(
+        amount=Decimal("35.00"),
+        invoice_date=date(2025, 3, 15),
+        content_hash="h2",
+        source_path="/tmp/i2.pdf",
+    )
+    cfg = _config(
+        categories={
+            "building": Category(
+                name="building",
+                recurrence="monthly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("CCPP INVOICE",),
+                match_window_days=200,
+            )
+        }
+    )
+    # Critical: txn_late appears FIRST in the input list. Chrono-zip pairs
+    # txn_early1↔inv1 and txn_early2↔inv2; both invoices must be reserved
+    # before txn_late's per-txn matching runs, otherwise it sees both as
+    # candidates and emits AMBIGUOUS.
+    result = match(
+        [txn_late, txn_early1, txn_early2],
+        {"building": [inv1, inv2]},
+        cfg,
+    )
+    by_txn = {item.transaction: item for item in result.items}
+    assert by_txn[txn_early1].invoice is inv1
+    assert by_txn[txn_early2].invoice is inv2
+    # txn_late must NOT see inv1/inv2 as candidates — they belong to the
+    # pre-assigned earlier txns. The bug surfaces as a spurious AMBIGUOUS alert.
+    ambig = [
+        a.message for a in result.alerts if a.kind is AlertKind.AMBIGUOUS_INVOICE_MATCH
+    ]
+    assert ambig == [], f"unexpected ambiguous alerts: {ambig}"
+
+
+def test_chronological_zip_falls_back_when_pairing_violates_window() -> None:
+    # Two txns, two invoices, but the chronological pairing for the earlier
+    # txn would exceed the window. No valid full assignment exists, so the
+    # resolution must NOT silently fabricate matches — fall back to existing
+    # per-transaction matching behavior.
+    tx_a = make_transaction(
+        date=date(2024, 9, 2),
+        description="CCPP INVOICE",
+        amount=Decimal("150.00"),
+    )
+    tx_b = make_transaction(
+        date=date(2024, 9, 5),
+        description="CCPP INVOICE",
+        amount=Decimal("150.00"),
+    )
+    # inv_a is far too old for tx_a (delta = 125 days, window = 30).
+    inv_a = make_invoice(
+        amount=Decimal("150.00"),
+        invoice_date=date(2024, 4, 30),
+        content_hash="hA",
+        source_path="/tmp/invA.pdf",
+    )
+    inv_b = make_invoice(
+        amount=Decimal("150.00"),
+        invoice_date=date(2024, 8, 25),
+        content_hash="hB",
+        source_path="/tmp/invB.pdf",
+    )
+    cfg = _config(
+        categories={
+            "building": Category(
+                name="building",
+                recurrence="quarterly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("CCPP INVOICE",),
+                match_window_days=30,
+            )
+        }
+    )
+    result = match([tx_a, tx_b], {"building": [inv_a, inv_b]}, cfg)
+    # The chronological zip would pair (tx_a, inv_a) which is out of window,
+    # so it must not be used. Tx_a should not be silently assigned inv_a.
+    by_txn = {item.transaction: item for item in result.items}
+    if tx_a in by_txn:
+        assert by_txn[tx_a].invoice is not inv_a
 
 
 def test_pattern_match_no_invoice_folder() -> None:
@@ -512,6 +888,318 @@ def _cfg_with_split_groups(
         manual_mappings=cfg.manual_mappings,
         split_groups=split_groups,
     )
+
+
+def test_split_group_recurrence_none_routes_by_amount(tmp_path: Path) -> None:
+    # Two distinct one-off categories share a transaction description but
+    # each has its own invoice with a different amount. Recurrence "none" is
+    # legal here because amount alone disambiguates which category each
+    # transaction belongs to — the rank-fallback path never fires.
+    a_dir = tmp_path / "inv_a"
+    a_dir.mkdir()
+    b_dir = tmp_path / "inv_b"
+    b_dir.mkdir()
+    cats = {
+        "a": Category(
+            name="a",
+            recurrence="none",
+            invoice_folder=a_dir,
+            invoice_parser="pepeenergy",
+            patterns=("ONEOFF INVOICE",),
+        ),
+        "b": Category(
+            name="b",
+            recurrence="none",
+            invoice_folder=b_dir,
+            invoice_parser="pepeenergy",
+            patterns=("ONEOFF INVOICE",),
+        ),
+    }
+    cfg = _cfg_with_split_groups(categories=cats)
+    txn_a = make_transaction(
+        date=date(2026, 5, 18),
+        description="ONEOFF INVOICE ACME",
+        amount=Decimal("42.00"),
+    )
+    txn_b = make_transaction(
+        date=date(2026, 6, 18),
+        description="ONEOFF INVOICE ACME",
+        amount=Decimal("99.00"),
+    )
+    inv_a = make_invoice(
+        amount=Decimal("42.00"), invoice_date=date(2026, 5, 10), parser="pepeenergy"
+    )
+    inv_b = make_invoice(
+        amount=Decimal("99.00"), invoice_date=date(2026, 6, 10), parser="pepeenergy"
+    )
+    result = match([txn_a, txn_b], {"a": [inv_a], "b": [inv_b]}, cfg)
+    assert len(result.items) == 2
+    by_txn = {item.transaction: item for item in result.items}
+    assert by_txn[txn_a].category == "a"
+    assert by_txn[txn_a].invoice is inv_a
+    assert by_txn[txn_b].category == "b"
+    assert by_txn[txn_b].invoice is inv_b
+    assert all(a.kind is not AlertKind.AMBIGUOUS_INVOICE_MATCH for a in result.alerts)
+    assert all(a.kind is not AlertKind.AMBIGUOUS_SPLIT_BUCKET for a in result.alerts)
+
+
+def test_split_group_4_txns_4_invoices_all_in_cat_a_window_130(tmp_path: Path) -> None:
+    # Mirrors the user-reported scenario exactly:
+    # - Two categories share the pattern (split group).
+    # - All 4 transactions and all 4 invoices belong only to cat 'a'.
+    # - cat 'b' has invoices at a different amount (irrelevant filler).
+    # - 4 transactions of equal amount on 2 distinct dates (May 13 ×2, Sep 5 ×2).
+    # - 4 invoices: three with invoice_date 2024-04-30 (different periods),
+    #   one with invoice_date 2024-05-28.
+    # - match_window_days = 130 on cat 'a'.
+    # Expectation: all 4 match via chronological-zip, no AMBIGUOUS/MISSING/ORPHAN.
+    a_dir = tmp_path / "inv_a"
+    a_dir.mkdir()
+    b_dir = tmp_path / "inv_b"
+    b_dir.mkdir()
+    cats = {
+        "a": Category(
+            name="a",
+            recurrence="none",
+            invoice_folder=a_dir,
+            invoice_parser="pepeenergy",
+            patterns=("CCPP INVOICE",),
+            match_window_days=130,
+        ),
+        "b": Category(
+            name="b",
+            recurrence="none",
+            invoice_folder=b_dir,
+            invoice_parser="pepeenergy",
+            patterns=("CCPP INVOICE",),
+            match_window_days=130,
+        ),
+    }
+    cfg = _cfg_with_split_groups(categories=cats)
+    amt = Decimal("75.00")
+    t1 = make_transaction(date=date(2024, 5, 13), description="CCPP INVOICE", amount=amt)
+    t2 = make_transaction(date=date(2024, 5, 13), description="CCPP INVOICE", amount=amt)
+    t3 = make_transaction(date=date(2024, 9, 5), description="CCPP INVOICE", amount=amt)
+    t4 = make_transaction(date=date(2024, 9, 5), description="CCPP INVOICE", amount=amt)
+    i1 = make_invoice(
+        amount=amt,
+        invoice_date=date(2024, 4, 30),
+        period_start=date(2023, 11, 15),
+        period_end=date(2024, 2, 9),
+        content_hash="h1",
+        source_path="/tmp/i1.pdf",
+    )
+    i2 = make_invoice(
+        amount=amt,
+        invoice_date=date(2024, 4, 30),
+        period_start=date(2024, 2, 9),
+        period_end=date(2024, 3, 11),
+        content_hash="h2",
+        source_path="/tmp/i2.pdf",
+    )
+    i3 = make_invoice(
+        amount=amt,
+        invoice_date=date(2024, 4, 30),
+        period_start=date(2024, 3, 11),
+        period_end=date(2024, 4, 11),
+        content_hash="h3",
+        source_path="/tmp/i3.pdf",
+    )
+    i4 = make_invoice(
+        amount=amt,
+        invoice_date=date(2024, 5, 28),
+        period_start=date(2024, 4, 11),
+        period_end=date(2024, 5, 15),
+        content_hash="h4",
+        source_path="/tmp/i4.pdf",
+    )
+    # Irrelevant cat 'b' invoice at a different amount.
+    b_irrelevant = make_invoice(
+        amount=Decimal("99.00"),
+        invoice_date=date(2024, 1, 1),
+        content_hash="hBirr",
+        source_path="/tmp/b_irr.pdf",
+    )
+    result = match(
+        [t1, t2, t3, t4],
+        {"a": [i1, i2, i3, i4], "b": [b_irrelevant]},
+        cfg,
+    )
+    assert len(result.items) == 4, (
+        f"expected 4 matches, got {len(result.items)} matches; alerts={result.alerts}"
+    )
+    matched_invs = {item.invoice for item in result.items}
+    assert matched_invs == {i1, i2, i3, i4}, f"matched={matched_invs}"
+    # The only orphan should be the irrelevant cat 'b' filler invoice, not
+    # any of the 4 in cat 'a' that the user reported as orphan in production.
+    orphan_cats = [
+        a.payload.get("category")
+        for a in result.alerts
+        if a.kind is AlertKind.ORPHAN_INVOICE
+    ]
+    assert orphan_cats == ["b"], f"unexpected orphans: {orphan_cats}"
+
+
+def test_split_group_chronological_zip_when_invoices_spread_across_cats(
+    tmp_path: Path,
+) -> None:
+    # Two categories share a pattern. 4 transactions share an amount; the
+    # 4 invoices that match that amount are spread 2/2 across the two
+    # categories. The chronological-zip pre-pass should pair T1/T2 with
+    # cat 'a's invoices and T3/T4 with cat 'b's invoices — not try to
+    # pair T1/T2 against both cats' invoice lists (which would silently
+    # fail when one of cat B's invoices is newer than T2).
+    a_dir = tmp_path / "inv_a"
+    a_dir.mkdir()
+    b_dir = tmp_path / "inv_b"
+    b_dir.mkdir()
+    cats = {
+        "a": Category(
+            name="a",
+            recurrence="none",
+            invoice_folder=a_dir,
+            invoice_parser="pepeenergy",
+            patterns=("CCPP INVOICE",),
+            match_window_days=130,
+        ),
+        "b": Category(
+            name="b",
+            recurrence="none",
+            invoice_folder=b_dir,
+            invoice_parser="pepeenergy",
+            patterns=("CCPP INVOICE",),
+            match_window_days=130,
+        ),
+    }
+    cfg = _cfg_with_split_groups(categories=cats)
+    amt = Decimal("75.00")
+    t1 = make_transaction(date=date(2024, 5, 13), description="CCPP INVOICE", amount=amt)
+    t2 = make_transaction(date=date(2024, 5, 13), description="CCPP INVOICE", amount=amt)
+    t3 = make_transaction(date=date(2024, 9, 5), description="CCPP INVOICE", amount=amt)
+    t4 = make_transaction(date=date(2024, 9, 5), description="CCPP INVOICE", amount=amt)
+    inv_a1 = make_invoice(
+        amount=Decimal("75.00"),
+        invoice_date=date(2024, 4, 30),
+        period_start=date(2023, 11, 15),
+        period_end=date(2024, 2, 9),
+        content_hash="hA1",
+        source_path="/tmp/A1.pdf",
+    )
+    inv_a2 = make_invoice(
+        amount=Decimal("75.00"),
+        invoice_date=date(2024, 4, 30),
+        period_start=date(2024, 2, 9),
+        period_end=date(2024, 3, 11),
+        content_hash="hA2",
+        source_path="/tmp/A2.pdf",
+    )
+    inv_b1 = make_invoice(
+        amount=Decimal("75.00"),
+        invoice_date=date(2024, 4, 30),
+        period_start=date(2024, 3, 11),
+        period_end=date(2024, 4, 11),
+        content_hash="hB1",
+        source_path="/tmp/B1.pdf",
+    )
+    inv_b2 = make_invoice(
+        amount=Decimal("75.00"),
+        invoice_date=date(2024, 5, 28),
+        period_start=date(2024, 4, 11),
+        period_end=date(2024, 5, 15),
+        content_hash="hB2",
+        source_path="/tmp/B2.pdf",
+    )
+    result = match(
+        [t1, t2, t3, t4],
+        {"a": [inv_a1, inv_a2], "b": [inv_b1, inv_b2]},
+        cfg,
+    )
+    assert len(result.items) == 4, f"expected 4 matches, got alerts={result.alerts}"
+    by_txn = {item.transaction: item for item in result.items}
+    # T1, T2 should be matched to cat 'a's invoices.
+    assert by_txn[t1].category == "a"
+    assert by_txn[t2].category == "a"
+    # T3, T4 should be matched to cat 'b's invoices.
+    assert by_txn[t3].category == "b"
+    assert by_txn[t4].category == "b"
+    # No alerts at all.
+    assert all(a.kind is not AlertKind.AMBIGUOUS_INVOICE_MATCH for a in result.alerts)
+    assert all(a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
+    assert all(a.kind is not AlertKind.ORPHAN_INVOICE for a in result.alerts)
+
+
+def test_split_group_chronological_zip_resolves_same_amount_bucket(tmp_path: Path) -> None:
+    # Two categories share a pattern (split group), each with its own invoice
+    # folder. All 4 transactions and matching invoices land in category 'a';
+    # category 'b' has invoices but at a different amount. Single-pass
+    # restricted matching would flag the early txn as having 2 candidates,
+    # but the chronological-zip pre-pass can resolve the bucket unambiguously.
+    a_dir = tmp_path / "inv_a"
+    a_dir.mkdir()
+    b_dir = tmp_path / "inv_b"
+    b_dir.mkdir()
+    cats = {
+        "a": Category(
+            name="a",
+            recurrence="none",
+            invoice_folder=a_dir,
+            invoice_parser="pepeenergy",
+            patterns=("CCPP INVOICE",),
+            match_window_days=125,
+        ),
+        "b": Category(
+            name="b",
+            recurrence="none",
+            invoice_folder=b_dir,
+            invoice_parser="pepeenergy",
+            patterns=("CCPP INVOICE",),
+            match_window_days=125,
+        ),
+    }
+    cfg = _cfg_with_split_groups(categories=cats)
+    tx_a = make_transaction(
+        date=date(2024, 9, 2),
+        description="CCPP INVOICE",
+        amount=Decimal("150.00"),
+    )
+    tx_b = make_transaction(
+        date=date(2024, 9, 5),
+        description="CCPP INVOICE",
+        amount=Decimal("150.00"),
+    )
+    inv_a = make_invoice(
+        amount=Decimal("150.00"),
+        invoice_date=date(2024, 4, 30),
+        content_hash="hA",
+        source_path="/tmp/invA.pdf",
+    )
+    inv_b = make_invoice(
+        amount=Decimal("150.00"),
+        invoice_date=date(2024, 7, 30),
+        content_hash="hB",
+        source_path="/tmp/invB.pdf",
+    )
+    # Cat 'b' has an unrelated invoice at a different amount (irrelevant to
+    # this bucket, but keeps the split group's has_invoices=True path live).
+    inv_b_unrelated = make_invoice(
+        amount=Decimal("99.00"),
+        invoice_date=date(2024, 1, 1),
+        content_hash="hBunrel",
+        source_path="/tmp/invB_unrel.pdf",
+    )
+    result = match(
+        [tx_a, tx_b],
+        {"a": [inv_a, inv_b], "b": [inv_b_unrelated]},
+        cfg,
+    )
+    assert len(result.items) == 2
+    by_txn = {item.transaction: item for item in result.items}
+    assert by_txn[tx_a].category == "a"
+    assert by_txn[tx_a].invoice is inv_a
+    assert by_txn[tx_b].category == "a"
+    assert by_txn[tx_b].invoice is inv_b
+    assert all(a.kind is not AlertKind.AMBIGUOUS_INVOICE_MATCH for a in result.alerts)
+    assert all(a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
 
 
 def test_split_group_invoice_match_resolves_to_member(tmp_path: Path) -> None:
