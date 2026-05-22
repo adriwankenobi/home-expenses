@@ -40,7 +40,7 @@ def test_invoice_cache_roundtrip(tmp_path: Path) -> None:
     cache.flush()
 
     cache2 = ExtractionCache(tmp_path)
-    got = cache2.get_invoice("abc")
+    got = cache2.get_invoice("abc", "pepeenergy")
     assert got is not None
     assert got.amount == Decimal("11.11")
     assert got.period.start == date(2024, 5, 1)
@@ -70,8 +70,41 @@ def test_statement_cache_roundtrip(tmp_path: Path) -> None:
 
 def test_missing_hash_returns_none(tmp_path: Path) -> None:
     cache = ExtractionCache(tmp_path)
-    assert cache.get_invoice("missing") is None
+    assert cache.get_invoice("missing", "pepeenergy") is None
     assert cache.get_statement("missing") is None
+
+
+def test_same_pdf_cached_separately_per_parser(tmp_path: Path) -> None:
+    # Aguas y Basuras and Ecociudad parse the same physical PDF — same SHA256
+    # but different extracted amounts. The cache must keep them apart.
+    cache = ExtractionCache(tmp_path)
+    ayto = Invoice(
+        source_path="/tmp/AB.pdf",
+        content_hash="same-hash",
+        parser="aguasYBasuras",
+        amount=Decimal("30.00"),
+        invoice_date=date(2025, 11, 12),
+        period=InvoicePeriod(start=date(2025, 7, 29), end=date(2025, 11, 3)),
+    )
+    eco = Invoice(
+        source_path="/tmp/AB.pdf",
+        content_hash="same-hash",
+        parser="ecociudad",
+        amount=Decimal("87.34"),
+        invoice_date=date(2025, 11, 12),
+        period=InvoicePeriod(start=date(2025, 7, 29), end=date(2025, 11, 3)),
+    )
+    cache.put_invoice(ayto)
+    cache.put_invoice(eco)
+    cache.flush()
+
+    cache2 = ExtractionCache(tmp_path)
+    got_ayto = cache2.get_invoice("same-hash", "aguasYBasuras")
+    got_eco = cache2.get_invoice("same-hash", "ecociudad")
+    assert got_ayto is not None
+    assert got_eco is not None
+    assert got_ayto.amount == Decimal("30.00")
+    assert got_eco.amount == Decimal("87.34")
 
 
 def test_clear_removes_files(tmp_path: Path) -> None:
@@ -108,4 +141,6 @@ def test_cache_dir_is_created_if_missing(tmp_path: Path) -> None:
     cache.flush()
     assert (target / "pdf-extractions.json").exists()
     data = json.loads((target / "pdf-extractions.json").read_text())
-    assert "abc" in data
+    # Stored under a composite key that includes the parser name so two
+    # parsers can extract distinct data from the same physical PDF.
+    assert "abc|pepeenergy" in data

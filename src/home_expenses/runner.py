@@ -142,7 +142,7 @@ def _load_invoices(
                 skipped.append(str(f))
                 continue
             h = file_sha256(f)
-            hit = cache.get_invoice(h)
+            hit = cache.get_invoice(h, cat.invoice_parser)
             if hit is not None:
                 by_cat[name].append(hit)
                 from_cache += 1

@@ -28,6 +28,12 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _invoice_key(content_hash: str, parser: str) -> str:
+    # Composite key so two parsers can extract distinct data from the same
+    # physical PDF (e.g. aguasYBasuras and ecociudad share one Zaragoza bill).
+    return f"{content_hash}|{parser}"
+
+
 class ExtractionCache:
     """In-memory + on-disk cache of parsed invoices and statements."""
 
@@ -45,8 +51,8 @@ class ExtractionCache:
         if stmt_file.exists():
             self._statements = json.loads(stmt_file.read_text(encoding="utf-8"))
 
-    def get_invoice(self, content_hash: str) -> Invoice | None:
-        data = self._invoices.get(content_hash)
+    def get_invoice(self, content_hash: str, parser: str) -> Invoice | None:
+        data = self._invoices.get(_invoice_key(content_hash, parser))
         if data is None:
             return None
         raw_inv_date = data.get("invoice_date")
@@ -63,7 +69,7 @@ class ExtractionCache:
         )
 
     def put_invoice(self, invoice: Invoice) -> None:
-        self._invoices[invoice.content_hash] = {
+        self._invoices[_invoice_key(invoice.content_hash, invoice.parser)] = {
             "source_path": invoice.source_path,
             "parser": invoice.parser,
             "amount": str(invoice.amount),
