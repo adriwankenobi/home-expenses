@@ -275,7 +275,11 @@ def test_split_group_mismatched_recurrence_rejected(tmp_path: Path) -> None:
         load_config(p)
 
 
-def test_split_group_recurrence_none_rejected(tmp_path: Path) -> None:
+def test_split_group_recurrence_none_rejected_without_invoices(tmp_path: Path) -> None:
+    # Recurrence "none" only works when both members have invoice folders —
+    # the matcher routes via amount, which doesn't need period buckets. Without
+    # invoice folders the rank-based fallback path would fire and there's no
+    # meaningful period to bucket into.
     payload = _valid_payload(tmp_path)
     payload["categories"]["x"] = {"recurrence": "none", "patterns": ["QUARTERLY INVOICE"]}
     payload["categories"]["y"] = {"recurrence": "none", "patterns": ["QUARTERLY INVOICE"]}
@@ -283,6 +287,36 @@ def test_split_group_recurrence_none_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="cannot have recurrence"):
         load_config(p)
+
+
+def test_split_group_recurrence_none_allowed_with_invoices(tmp_path: Path) -> None:
+    # Two one-off categories sharing a transaction description but with their
+    # own invoices: amount disambiguates which category each transaction
+    # belongs to, so the rank-fallback path is never needed.
+    payload = _valid_payload(tmp_path)
+    inv_x = tmp_path / "inv_x"
+    inv_x.mkdir()
+    inv_y = tmp_path / "inv_y"
+    inv_y.mkdir()
+    payload["categories"]["x"] = {
+        "recurrence": "none",
+        "patterns": ["ONEOFF INVOICE"],
+        "invoice_folder": str(inv_x),
+        "invoice_parser": "pepeenergy",
+    }
+    payload["categories"]["y"] = {
+        "recurrence": "none",
+        "patterns": ["ONEOFF INVOICE"],
+        "invoice_folder": str(inv_y),
+        "invoice_parser": "pepeenergy",
+    }
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    assert len(cfg.split_groups) == 1
+    sg = cfg.split_groups[0]
+    assert sg.recurrence == "none"
+    assert sg.has_invoices is True
+    assert {m.name for m in sg.members} == {"x", "y"}
 
 
 def test_split_group_mixed_invoice_folder_rejected(tmp_path: Path) -> None:

@@ -95,7 +95,7 @@ class Category:
 @dataclass(frozen=True)
 class SplitGroup:
     members: tuple[Category, ...]  # in config order
-    recurrence: Recurrence  # never "none"
+    recurrence: Recurrence  # "none" allowed only when has_invoices is True
     has_invoices: bool
     patterns: tuple[str, ...]  # patterns shared across all members
 
@@ -235,19 +235,27 @@ def load_config(path: Path) -> Config:
                 f"have the same recurrence (got {sorted(recs)})"
             )
         (rec,) = recs
-        if rec == "none":
-            raise ConfigError(f"{path}: split group {member_names} cannot have recurrence 'none'")
         has_inv = {m.invoice_folder is not None for m in members}
         if len(has_inv) != 1:
             raise ConfigError(
                 f"{path}: split group {member_names} must either all "
                 f"have invoice_folder set or none of them"
             )
+        has_invoices = has_inv.pop()
+        # Recurrence "none" is only viable when every member has an invoice
+        # folder: amount alone disambiguates which category each transaction
+        # belongs to, so the period-based rank-fallback path never fires.
+        # Without invoices the matcher needs a real recurrence to bucket by.
+        if rec == "none" and not has_invoices:
+            raise ConfigError(
+                f"{path}: split group {member_names} cannot have recurrence "
+                f"'none' without invoice_folder on every member"
+            )
         split_groups.append(
             SplitGroup(
                 members=members,
                 recurrence=rec,
-                has_invoices=has_inv.pop(),
+                has_invoices=has_invoices,
                 patterns=tuple(shared_patterns),
             )
         )
