@@ -151,7 +151,7 @@ def load_config(path: Path) -> Config:
         raise ConfigError(f"{path}: bank_statements.dir does not exist: {bs_dir}")
 
     cache_dir_raw = raw.get("cache_dir")
-    cache_dir = Path(cache_dir_raw) if cache_dir_raw else path.parent / "cache"
+    cache_dir = Path(cache_dir_raw) if cache_dir_raw else Path.cwd() / "cache"
 
     cats_raw = raw["categories"]
     if isinstance(cats_raw, list):

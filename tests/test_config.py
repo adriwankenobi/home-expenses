@@ -106,8 +106,9 @@ def test_manual_mapping_key_equal_to_pattern_accepted(tmp_path: Path) -> None:
     assert cfg.manual_mappings["PEPE ENERGY INVOICE"][0].category == "electricity"
 
 
-def test_cache_dir_defaults_to_sibling_of_config(tmp_path: Path) -> None:
+def test_cache_dir_defaults_to_cwd_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     p = _write_config(tmp_path, _valid_payload(tmp_path))
+    monkeypatch.chdir(tmp_path)
     cfg = load_config(p)
     assert cfg.cache_dir == tmp_path / "cache"
 
