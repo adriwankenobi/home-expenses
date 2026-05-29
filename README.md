@@ -15,7 +15,14 @@ cp config.example.json config.json
 # edit config.json with your absolute paths and categories
 ```
 
-`config.json` is gitignored.
+Tell the CLI where to find `config.json` via the `HOME_EXPENSES_CONFIG` env var. The simplest setup is a project-local `.env` file (gitignored, loaded automatically by `just`):
+
+```bash
+cp .env.example .env
+# edit .env with the absolute path to your config.json
+```
+
+Precedence: explicit `--config` flag > `HOME_EXPENSES_CONFIG` env var > `./config.json` in the current directory.
 
 ## Per-transaction display overrides via `manual_mappings`
 
@@ -50,7 +57,7 @@ Open `report.html` in **Firefox**. PDF links use `file://` URLs that Firefox ope
 
 ## Cache
 
-Parsed invoices and statements are cached in `<config-dir>/cache/` keyed by file content hash. Wipe with:
+Parsed invoices and statements are cached in `./cache/` (relative to the working directory — i.e. the repo root when invoked via `just`) keyed by file content hash. Override with `cache_dir` in `config.json`. Wipe with:
 
 ```bash
 uv run home-expenses cache clear

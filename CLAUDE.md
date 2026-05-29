@@ -10,7 +10,7 @@ Sanitized pastes from the user (real values replaced with fake equivalents prese
 
 ## How to test
 
-All tests use synthetic fixtures generated in-repo or in `tmp_path`. The canonical reference samples live in `tests/templates/` (e.g. `tests/templates/bank_statement.csv`). Real-world files (`bank_statements/`, `invoices/`, `config.json`, `cache/`, `report.html`) are gitignored and must never be read.
+All tests use synthetic fixtures generated in-repo or in `tmp_path`. The canonical reference samples live in `tests/templates/` (e.g. `tests/templates/bank_statement.csv`). Real-world files (`bank_statements/`, `invoices/`, `config.json`, `cache/`, `report.html`) are gitignored and must never be read. The user keeps `config.json` *outside* the repo and points the CLI at the config via the `HOME_EXPENSES_CONFIG` env var (precedence: `--config` flag > env var > `./config.json`).
 
 ## Adding a new invoice vendor
 

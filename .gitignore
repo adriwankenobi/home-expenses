@@ -1,6 +1,7 @@
 # Real data — never commit
 bank_statements/
 config.json
+.env
 
 # Generated
 report.html

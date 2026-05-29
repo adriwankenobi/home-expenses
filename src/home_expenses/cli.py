@@ -27,6 +27,8 @@ def cli() -> None:
     "config_path",
     type=click.Path(exists=True, path_type=Path),
     default=Path("config.json"),
+    envvar="HOME_EXPENSES_CONFIG",
+    show_envvar=True,
 )
 @click.option(
     "--output",
@@ -99,6 +101,8 @@ def cache() -> None:
     "config_path",
     type=click.Path(exists=True, path_type=Path),
     default=Path("config.json"),
+    envvar="HOME_EXPENSES_CONFIG",
+    show_envvar=True,
 )
 def cache_clear(config_path: Path) -> None:
     """Wipe the extraction cache."""
