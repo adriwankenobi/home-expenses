@@ -166,6 +166,11 @@
   // items table only — Plotly chart legends keep their own state. Set
   // persists across year-filter switches.
   const hiddenCategories = new Set();
+  // Categories the user has hidden via the timeline chart's own legend.
+  // Scoped to the timeline only; items in these categories are removed from
+  // the chart layout entirely (rows collapse, height shrinks) rather than
+  // leaving Plotly's default empty-row gaps. Persists across year switches.
+  const hiddenTimelineCats = new Set();
 
   function filtered() {
     if (activeYear === 'all') return data.items;
@@ -678,7 +683,19 @@
     // Every element of an item uses the item's category color. Traces are
     // grouped by category name (5 traces per category) because Plotly applies
     // one color per trace; legendgroup keeps a category's 5 traces in sync.
+    // `cats` covers every category present in the input so all of them get
+    // a legend entry (even when currently hidden). `visibleItems` excludes
+    // items in hidden categories so their rows collapse instead of leaving
+    // empty space; original indices are remembered so payment-marker
+    // customdata still points at the right row in `items` for highlight.
     const cats = categoriesPresent(items);
+    const visibleItems = [];
+    const origIdxByVisIdx = [];
+    items.forEach((it, i) => {
+      if (hiddenTimelineCats.has(it.category)) return;
+      origIdxByVisIdx.push(i);
+      visibleItems.push(it);
+    });
     const catData = {};
     cats.forEach(cat => {
       catData[cat] = {
@@ -698,24 +715,24 @@
     const sortKey = it => it.period_start || it.invoice_date || it.date || '';
     const groupKey = it =>
       it.category + '|' + (it.period_start || '') + '|' + (it.period_end || '');
-    const yPos = new Array(items.length);
+    const yPos = new Array(visibleItems.length);
     const groupY = {};
     let nextY = 0;
-    items.map((_, i) => i)
-      .sort((a, b) => sortKey(items[a]).localeCompare(sortKey(items[b])))
-      .forEach((origIdx) => {
-        const k = groupKey(items[origIdx]);
+    visibleItems.map((_, i) => i)
+      .sort((a, b) => sortKey(visibleItems[a]).localeCompare(sortKey(visibleItems[b])))
+      .forEach((vi) => {
+        const k = groupKey(visibleItems[vi]);
         if (groupY[k] === undefined) groupY[k] = nextY++;
-        yPos[origIdx] = groupY[k];
+        yPos[vi] = groupY[k];
       });
 
     // Draw the period bar once per (category, period) group; later items
     // sharing the same row contribute only their payment/invoice markers.
     const drawnPeriod = new Set();
-    items.forEach((it, i) => {
+    visibleItems.forEach((it, vi) => {
       const cat = it.category;
       const cd = catData[cat];
-      const y = yPos[i];
+      const y = yPos[vi];
       const k = groupKey(it);
       if (it.period_start && it.period_end && !drawnPeriod.has(k)) {
         cd.periodLineX.push(it.period_start, it.period_end, null);
@@ -739,7 +756,7 @@
       }
       cd.payX.push(it.date);
       cd.payY.push(y);
-      cd.payCustom.push(i);
+      cd.payCustom.push(origIdxByVisIdx[vi]);
       const lag = it.period_end ? days(it.period_end, it.date) : null;
       const periodDays = (it.period_start && it.period_end)
         ? daysInclusive(it.period_start, it.period_end) : null;
@@ -760,25 +777,52 @@
     // legend click toggles the whole category. The payment-marker trace
     // carries the visible legend entry; the others stay legend-hidden but
     // toggle in sync via legendgroup.
+    // Hidden cats contributed no points, so their payment trace is empty —
+    // Plotly drops empty traces from the legend, which would hide the pill
+    // and leave the user no way to re-enable the category. Seed each hidden
+    // cat's payment trace with one in-range point so the legend entry
+    // survives; 'legendonly' below keeps the point itself from drawing.
+    // Null/NaN seeds break the date-axis autorange pipeline (the whole
+    // chart vanishes when the trace happens to be rendered first), so use
+    // an existing item's date — visible:'legendonly' means it can't expand
+    // the range anyway.
+    const seedX = (visibleItems[0] && visibleItems[0].date)
+                  || (items[0] && items[0].date)
+                  || '2000-01-01';
+    cats.forEach(cat => {
+      if (hiddenTimelineCats.has(cat) && catData[cat].payX.length === 0) {
+        catData[cat].payX.push(seedX);
+        catData[cat].payY.push(0);
+        catData[cat].payText.push('');
+        catData[cat].payCustom.push(null);
+      }
+    });
     const traces = [];
     cats.forEach(cat => {
       const cd = catData[cat];
       const c = colorMap[cat];
+      // Hidden cats: 'legendonly' fades the legend pill while drawing
+      // nothing, and the null seed above ensures the pill renders at all.
+      const vis = hiddenTimelineCats.has(cat) ? 'legendonly' : true;
       traces.push(
         { x: cd.periodLineX, y: cd.periodLineY, mode: 'lines+markers',
           type: 'scatter',
           line: { color: c, width: 6 },
           marker: { color: c, size: 5, symbol: 'line-ns-open' },
-          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat },
+          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat,
+          visible: vis },
         { x: cd.lagLineX, y: cd.lagLineY, mode: 'lines', type: 'scatter',
           line: { color: c, width: 2 },
-          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat },
+          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat,
+          visible: vis },
         { x: cd.waitLineX, y: cd.waitLineY, mode: 'lines', type: 'scatter',
           line: { color: c, width: 2, dash: 'dot' },
-          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat },
+          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat,
+          visible: vis },
         { x: cd.invX, y: cd.invY, mode: 'markers', type: 'scatter',
           marker: { color: c, size: 11, symbol: 'diamond' },
-          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat },
+          hoverinfo: 'skip', showlegend: false, legendgroup: cat, name: cat,
+          visible: vis },
         // The single hoverable trace per category; also the legend entry.
         { x: cd.payX, y: cd.payY, text: cd.payText, customdata: cd.payCustom,
           mode: 'markers', type: 'scatter',
@@ -786,7 +830,8 @@
           hovertemplate: '%{text}<extra></extra>',
           hoverlabel: { bgcolor: darken(c, 0.25), bordercolor: c,
                         font: { color: '#fff' } },
-          showlegend: true, legendgroup: cat, name: cat },
+          showlegend: true, legendgroup: cat, name: cat,
+          visible: vis },
       );
     });
 
@@ -797,13 +842,61 @@
       // identifies the category and tooltip carries the per-item detail.
       yaxis: { autorange: 'reversed', showticklabels: false,
                showgrid: false, zeroline: false },
-      height: Math.max(400, items.length * 22 + 80),
+      height: Math.max(400, visibleItems.length * 22 + 80),
       showlegend: true,
     }), STATIC_CONFIG);
     const div = document.getElementById('chart-timeline');
     div.on('plotly_click', evt => {
       const cd = evt.points[0].customdata;
       if (cd !== null && cd !== undefined) highlightItems([cd]);
+    });
+    // Plotly's default legend toggle only flips `visible`, which leaves the
+    // row's y-slot in the layout — visible rows then sit on a tall chart
+    // with empty bands. Intercept the click, update hiddenTimelineCats, and
+    // re-render so the layout actually collapses. Returning false prevents
+    // Plotly's own visibility toggle (which would fight our state).
+    //
+    // The clicked category is read from evt.data (Plotly's authoritative
+    // trace list), not the local `traces` closure, so the lookup survives
+    // any re-render race.
+    //
+    // Plotly fires plotly_legendclick SYNCHRONOUSLY on every click — both
+    // clicks of a dblclick. Plotly's dblclick detection relies on the
+    // chart's mouseDownTime tracking; a newPlot from inside the first
+    // legendclick wipes that state, so the second click lands on a fresh
+    // chart counter and dblclick is never recognized. We defer the toggle
+    // by doubleClickDelay (300ms); if a dblclick lands in that window, the
+    // dblclick handler cancels the pending toggle and runs isolate
+    // instead. The chart survives the click sequence, so Plotly's own
+    // detection works.
+    const DBLCLICK_DELAY = 300;
+    let pendingLegendToggle = null;
+    div.on('plotly_legendclick', evt => {
+      const cat = evt.data[evt.curveNumber].name;
+      clearTimeout(pendingLegendToggle);
+      pendingLegendToggle = setTimeout(() => {
+        pendingLegendToggle = null;
+        if (hiddenTimelineCats.has(cat)) hiddenTimelineCats.delete(cat);
+        else hiddenTimelineCats.add(cat);
+        renderTimeline(items);
+      }, DBLCLICK_DELAY);
+      return false;
+    });
+    div.on('plotly_legenddoubleclick', evt => {
+      // Mirror Plotly's default dblclick: isolate the clicked category, or
+      // show all if it's already the only one visible.
+      clearTimeout(pendingLegendToggle);
+      pendingLegendToggle = null;
+      const clicked = evt.data[evt.curveNumber].name;
+      const onlyClickedVisible =
+        !hiddenTimelineCats.has(clicked) &&
+        cats.every(c => c === clicked || hiddenTimelineCats.has(c));
+      hiddenTimelineCats.clear();
+      if (!onlyClickedVisible) {
+        cats.forEach(c => { if (c !== clicked) hiddenTimelineCats.add(c); });
+      }
+      renderTimeline(items);
+      return false;
     });
     attachPointerCursor(div);
   }
