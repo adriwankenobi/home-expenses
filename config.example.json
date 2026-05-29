@@ -76,6 +76,16 @@
       "patterns": ["SHARED QUARTERLY INVOICE"],
       "recurrence": "quarterly",
       "start_date": "2024-Q3"
+    },
+    "mixedInvoiced": {
+      "invoice_folder": "/path/to/invoices/example",
+      "invoice_parser": "parser-example",
+      "recurrence": "monthly",
+      "patterns": ["MIXED EXAMPLE"]
+    },
+    "mixedCatchAll": {
+      "recurrence": "monthly",
+      "patterns": ["MIXED EXAMPLE"]
     }
   },
   "manual_mappings": {
@@ -83,6 +93,10 @@
       "category": "sharedQuarterly1",
       "recurrence": "yearly",
       "period_contains_payment": true
-    }
+    },
+    "SHARED DESCRIPTION BY AMOUNT": [
+      { "category": "Energy", "amount": "75.00" },
+      { "category": "Heating", "amount": "120.00" }
+    ]
   }
 }

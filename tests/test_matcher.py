@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -10,6 +11,7 @@ from home_expenses.config import (
     Config,
     ManualMapping,
     SplitGroup,
+    SplitGroupKind,
 )
 from home_expenses.matcher import MatchResult, match
 from home_expenses.models import AlertKind
@@ -19,15 +21,19 @@ from tests.factories import make_invoice, make_transaction
 def _config(
     *,
     categories: dict[str, Category] | None = None,
-    manual_mappings: dict[str, ManualMapping] | None = None,
+    manual_mappings: Mapping[str, ManualMapping | tuple[ManualMapping, ...]] | None = None,
 ) -> Config:
+    wrapped: dict[str, tuple[ManualMapping, ...]] = {
+        k: (v if isinstance(v, tuple) else (v,))
+        for k, v in (manual_mappings or {}).items()
+    }
     return Config(
         currency="EUR",
         bank_statements=BankStatementsConfig(dir=Path("/tmp"), glob="*.csv"),
         match_window_days_default=30,
         cache_dir=Path("/tmp/cache"),
         categories=categories or {},
-        manual_mappings=manual_mappings or {},
+        manual_mappings=wrapped,
     )
 
 
@@ -80,6 +86,48 @@ def test_invoice_outside_window_falls_to_pattern() -> None:
     assert len(result.items) == 1
     assert result.items[0].invoice is None
     assert any(a.kind is AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
+
+
+def test_manual_mapping_bypasses_window_for_invoice_match() -> None:
+    # An invoice exists with matching amount in the category's folder but
+    # its invoice_date is far from the bank charge (outside match_window).
+    # Without a manual_mapping the txn would route to the category but
+    # without an invoice (the existing test above covers that). With a
+    # manual_mapping pinning (description, amount) to this category, the
+    # window check is bypassed and the invoice is attached.
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="PEPE ENERGY INVOICE",
+        amount=Decimal("11.11"),
+    )
+    inv = make_invoice(
+        amount=Decimal("11.11"),
+        invoice_date=date(2025, 1, 1),  # outside the default 30-day window
+    )
+    cfg = _config(
+        categories={
+            "electricity": Category(
+                name="electricity",
+                recurrence="monthly",
+                invoice_folder=Path("/tmp"),
+                invoice_parser="pepeenergy",
+                patterns=("PEPE ENERGY INVOICE",),
+            )
+        },
+        manual_mappings={
+            "PEPE ENERGY INVOICE": ManualMapping(
+                category="electricity", amount=Decimal("11.11")
+            ),
+        },
+    )
+    result = match([txn], {"electricity": [inv]}, cfg)
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.category == "electricity"
+    assert item.invoice is inv
+    assert all(
+        a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts
+    )
 
 
 def test_ambiguous_invoice_match_falls_through_to_pattern() -> None:
@@ -850,7 +898,9 @@ def _split_pair_with_invoices(tmp: Path) -> dict[str, Category]:
 
 
 def _cfg_with_split_groups(
-    *, categories: dict[str, Category], manual_mappings: dict[str, ManualMapping] | None = None
+    *,
+    categories: dict[str, Category],
+    manual_mappings: Mapping[str, ManualMapping | tuple[ManualMapping, ...]] | None = None,
 ) -> Config:
     """_config(...) plus deriving SplitGroup tuples from shared patterns."""
     from collections import defaultdict
@@ -868,11 +918,21 @@ def _cfg_with_split_groups(
     split_groups_list: list[SplitGroup] = []
     for peer_set, shared_patterns in patterns_by_peer_set.items():
         members_in_order = tuple(categories[n] for n in categories if n in peer_set)
+        has_inv_count = sum(
+            1 for m in members_in_order if m.invoice_folder is not None
+        )
+        kind: SplitGroupKind
+        if has_inv_count == len(members_in_order):
+            kind = "all_invoiced"
+        elif has_inv_count == 0:
+            kind = "none_invoiced"
+        else:
+            kind = "mixed"
         split_groups_list.append(
             SplitGroup(
                 members=members_in_order,
                 recurrence=members_in_order[0].recurrence,
-                has_invoices=all(m.invoice_folder is not None for m in members_in_order),
+                kind=kind,
                 patterns=tuple(shared_patterns),
             )
         )
@@ -1180,7 +1240,7 @@ def test_split_group_chronological_zip_resolves_same_amount_bucket(tmp_path: Pat
         source_path="/tmp/invB.pdf",
     )
     # Cat 'b' has an unrelated invoice at a different amount (irrelevant to
-    # this bucket, but keeps the split group's has_invoices=True path live).
+    # this bucket, but keeps the split group's kind == "all_invoiced" path live).
     inv_b_unrelated = make_invoice(
         amount=Decimal("99.00"),
         invoice_date=date(2024, 1, 1),
@@ -1499,3 +1559,845 @@ def test_split_group_non_shared_pattern_routes_to_sole_owner() -> None:
     assert not result.unmatched_transactions
     assert all(a.kind is not AlertKind.AMBIGUOUS_SPLIT_BUCKET for a in result.alerts)
     assert all(a.kind is not AlertKind.AMBIGUOUS_PATTERN_MATCH for a in result.alerts)
+
+
+# --- mixed split groups ---
+
+
+def _cats_mixed_one_invoiced_one_catchall(tmp_path: Path) -> dict[str, Category]:
+    """Single-invoiced + single-catch-all mixed group, monthly recurrence."""
+    inv_dir = tmp_path / "inv_a"
+    inv_dir.mkdir()
+    return {
+        "a": Category(
+            name="a",
+            recurrence="monthly",
+            invoice_folder=inv_dir,
+            invoice_parser="pepeenergy",
+            patterns=("SHARED PATTERN",),
+        ),
+        "catchall": Category(
+            name="catchall",
+            recurrence="monthly",
+            patterns=("SHARED PATTERN",),
+        ),
+    }
+
+
+def test_mixed_split_group_happy_path(tmp_path: Path) -> None:
+    # One invoice matches transaction A; transaction B in the same period has
+    # no invoice and routes to the catch-all.
+    cats = _cats_mixed_one_invoiced_one_catchall(tmp_path)
+    cfg = _cfg_with_split_groups(categories=cats)
+    txn_a = make_transaction(
+        date=date(2026, 5, 10),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("42.00"),
+    )
+    txn_b = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("13.50"),
+    )
+    inv_a = make_invoice(
+        amount=Decimal("42.00"), invoice_date=date(2026, 5, 5), parser="pepeenergy"
+    )
+
+    result = match([txn_a, txn_b], {"a": [inv_a]}, cfg)
+
+    assert len(result.items) == 2
+    by_txn = {item.transaction: item for item in result.items}
+    assert by_txn[txn_a].category == "a"
+    assert by_txn[txn_a].invoice is inv_a
+    assert by_txn[txn_b].category == "catchall"
+    assert by_txn[txn_b].invoice is None
+    assert all(a.kind is not AlertKind.AMBIGUOUS_SPLIT_BUCKET for a in result.alerts)
+    assert all(a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
+
+
+def test_mixed_split_group_invoice_missing_bucket_mismatch(tmp_path: Path) -> None:
+    # Invoice for member 'a' did not arrive this period; both bucket txns are
+    # leftovers but only 1 non-invoiced active member exists → bucket size
+    # mismatch alert; leftovers stay unmatched.
+    cats = _cats_mixed_one_invoiced_one_catchall(tmp_path)
+    cfg = _cfg_with_split_groups(categories=cats)
+    txn_a = make_transaction(
+        date=date(2026, 5, 10),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("42.00"),
+    )
+    txn_b = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("13.50"),
+    )
+
+    result = match([txn_a, txn_b], {"a": []}, cfg)
+
+    assert any(
+        a.kind is AlertKind.AMBIGUOUS_SPLIT_BUCKET for a in result.alerts
+    )
+    assert any(
+        a.kind is AlertKind.EXPENSE_MISSING_INVOICE
+        and a.payload.get("category") == "a"
+        for a in result.alerts
+    )
+    assert len(result.items) == 0
+    assert set(result.unmatched_transactions) == {txn_a, txn_b}
+
+
+def test_mixed_split_group_orphan_invoice_when_no_amount_match(tmp_path: Path) -> None:
+    # Single transaction in the period; an invoice exists for member 'a' but
+    # its amount doesn't match. Bucket size 1 vs 2 active members fails →
+    # AMBIGUOUS_SPLIT_BUCKET; the unmatched invoice raises ORPHAN_INVOICE.
+    cats = _cats_mixed_one_invoiced_one_catchall(tmp_path)
+    cfg = _cfg_with_split_groups(categories=cats)
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("13.50"),
+    )
+    inv = make_invoice(
+        amount=Decimal("42.00"), invoice_date=date(2026, 5, 5), parser="pepeenergy"
+    )
+
+    result = match([txn], {"a": [inv]}, cfg)
+
+    assert any(a.kind is AlertKind.AMBIGUOUS_SPLIT_BUCKET for a in result.alerts)
+    assert any(a.kind is AlertKind.ORPHAN_INVOICE for a in result.alerts)
+    assert any(
+        a.kind is AlertKind.EXPENSE_MISSING_INVOICE
+        and a.payload.get("category") == "a"
+        for a in result.alerts
+    )
+    assert len(result.items) == 0
+    assert result.unmatched_transactions == (txn,)
+
+
+def test_mixed_split_group_catchall_not_yet_active(tmp_path: Path) -> None:
+    # Catch-all has start_date later than the period: only invoiced member is
+    # active → behaves like all-invoiced; no leftover phase. Single invoice
+    # match, no AMBIGUOUS_SPLIT_BUCKET, no MISSING_INVOICE.
+    inv_dir = tmp_path / "inv_a"
+    inv_dir.mkdir()
+    cats = {
+        "a": Category(
+            name="a",
+            recurrence="monthly",
+            invoice_folder=inv_dir,
+            invoice_parser="pepeenergy",
+            patterns=("SHARED PATTERN",),
+        ),
+        "catchall": Category(
+            name="catchall",
+            recurrence="monthly",
+            patterns=("SHARED PATTERN",),
+            start_date=date(2027, 1, 1),
+        ),
+    }
+    cfg = _cfg_with_split_groups(categories=cats)
+    txn = make_transaction(
+        date=date(2026, 5, 10),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("42.00"),
+    )
+    inv = make_invoice(
+        amount=Decimal("42.00"), invoice_date=date(2026, 5, 5), parser="pepeenergy"
+    )
+
+    result = match([txn], {"a": [inv]}, cfg)
+
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.category == "a"
+    assert item.invoice is inv
+    assert all(a.kind is not AlertKind.AMBIGUOUS_SPLIT_BUCKET for a in result.alerts)
+    assert all(a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
+
+
+def test_mixed_split_group_invoiced_not_yet_active(tmp_path: Path) -> None:
+    # Invoiced member has start_date later than the period: only catch-all is
+    # active. Single leftover routes to it; no missing-invoice alert.
+    inv_dir = tmp_path / "inv_a"
+    inv_dir.mkdir()
+    cats = {
+        "a": Category(
+            name="a",
+            recurrence="monthly",
+            invoice_folder=inv_dir,
+            invoice_parser="pepeenergy",
+            patterns=("SHARED PATTERN",),
+            start_date=date(2027, 1, 1),
+        ),
+        "catchall": Category(
+            name="catchall",
+            recurrence="monthly",
+            patterns=("SHARED PATTERN",),
+        ),
+    }
+    cfg = _cfg_with_split_groups(categories=cats)
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("13.50"),
+    )
+
+    result = match([txn], {"a": []}, cfg)
+
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.category == "catchall"
+    assert item.invoice is None
+    assert all(a.kind is not AlertKind.AMBIGUOUS_SPLIT_BUCKET for a in result.alerts)
+    assert all(a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts)
+
+
+def test_mixed_split_group_catchall_carries_manual_mapping_overrides(
+    tmp_path: Path,
+) -> None:
+    # A leftover routed to the single catch-all member can still pick up
+    # display_recurrence / display_period_contains_payment overrides from a
+    # manual_mapping pinning that description to the catch-all.
+    cats = _cats_mixed_one_invoiced_one_catchall(tmp_path)
+    manual = {
+        "SHARED PATTERN SPECIAL": ManualMapping(
+            category="catchall",
+            recurrence="yearly",
+            period_contains_payment=True,
+        )
+    }
+    cfg = _cfg_with_split_groups(categories=cats, manual_mappings=manual)
+    txn_a = make_transaction(
+        date=date(2026, 5, 10),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("42.00"),
+    )
+    txn_b = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED PATTERN SPECIAL",
+        amount=Decimal("13.50"),
+    )
+    inv_a = make_invoice(
+        amount=Decimal("42.00"), invoice_date=date(2026, 5, 5), parser="pepeenergy"
+    )
+
+    result = match([txn_a, txn_b], {"a": [inv_a]}, cfg)
+
+    assert len(result.items) == 2
+    by_txn = {item.transaction: item for item in result.items}
+    catchall_item = by_txn[txn_b]
+    assert catchall_item.category == "catchall"
+    assert catchall_item.display_recurrence == "yearly"
+    assert catchall_item.display_period_contains_payment is True
+
+
+def test_mixed_split_group_extra_txn_bucket_mismatch(tmp_path: Path) -> None:
+    # Three txns in one monthly period but only 2 active members → bucket size
+    # mismatch alert. The invoice-matched txn is still kept as an item; the
+    # other two leftovers go to unmatched.
+    cats = _cats_mixed_one_invoiced_one_catchall(tmp_path)
+    cfg = _cfg_with_split_groups(categories=cats)
+    txn_a = make_transaction(
+        date=date(2026, 5, 1),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("42.00"),
+    )
+    txn_extra1 = make_transaction(
+        date=date(2026, 5, 10),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("13.50"),
+    )
+    txn_extra2 = make_transaction(
+        date=date(2026, 5, 20),
+        description="SHARED PATTERN ACME",
+        amount=Decimal("7.00"),
+    )
+    inv_a = make_invoice(
+        amount=Decimal("42.00"), invoice_date=date(2026, 5, 1), parser="pepeenergy"
+    )
+
+    result = match([txn_a, txn_extra1, txn_extra2], {"a": [inv_a]}, cfg)
+
+    assert any(a.kind is AlertKind.AMBIGUOUS_SPLIT_BUCKET for a in result.alerts)
+    by_txn = {item.transaction: item.category for item in result.items}
+    assert by_txn.get(txn_a) == "a"
+    assert txn_extra1 in result.unmatched_transactions
+    assert txn_extra2 in result.unmatched_transactions
+
+
+def test_mixed_split_group_recurrence_none_routes_by_amount(tmp_path: Path) -> None:
+    # Two invoiced members + one catch-all, recurrence="none". Two transactions
+    # match invoices by amount and go to their invoiced categories; a third
+    # transaction has no matching invoice and goes to the catch-all. No
+    # bucket-size check (rec=none doesn't bucket).
+    a_dir = tmp_path / "inv_a"
+    a_dir.mkdir()
+    b_dir = tmp_path / "inv_b"
+    b_dir.mkdir()
+    cats = {
+        "a": Category(
+            name="a",
+            recurrence="none",
+            invoice_folder=a_dir,
+            invoice_parser="pepeenergy",
+            patterns=("ONEOFF",),
+        ),
+        "b": Category(
+            name="b",
+            recurrence="none",
+            invoice_folder=b_dir,
+            invoice_parser="pepeenergy",
+            patterns=("ONEOFF",),
+        ),
+        "catchall": Category(
+            name="catchall",
+            recurrence="none",
+            patterns=("ONEOFF",),
+        ),
+    }
+    cfg = _cfg_with_split_groups(categories=cats)
+    txn_a = make_transaction(
+        date=date(2026, 5, 18),
+        description="ONEOFF VENDOR",
+        amount=Decimal("42.00"),
+    )
+    txn_b = make_transaction(
+        date=date(2026, 6, 18),
+        description="ONEOFF VENDOR",
+        amount=Decimal("99.00"),
+    )
+    txn_catchall = make_transaction(
+        date=date(2026, 7, 18),
+        description="ONEOFF VENDOR",
+        amount=Decimal("17.00"),
+    )
+    inv_a = make_invoice(
+        amount=Decimal("42.00"),
+        invoice_date=date(2026, 5, 10),
+        parser="pepeenergy",
+    )
+    inv_b = make_invoice(
+        amount=Decimal("99.00"),
+        invoice_date=date(2026, 6, 10),
+        parser="pepeenergy",
+    )
+
+    result = match(
+        [txn_a, txn_b, txn_catchall],
+        {"a": [inv_a], "b": [inv_b]},
+        cfg,
+    )
+
+    assert len(result.items) == 3
+    by_txn = {item.transaction: item for item in result.items}
+    assert by_txn[txn_a].category == "a"
+    assert by_txn[txn_a].invoice is inv_a
+    assert by_txn[txn_b].category == "b"
+    assert by_txn[txn_b].invoice is inv_b
+    assert by_txn[txn_catchall].category == "catchall"
+    assert by_txn[txn_catchall].invoice is None
+    assert all(a.kind is not AlertKind.AMBIGUOUS_SPLIT_BUCKET for a in result.alerts)
+
+
+def test_mixed_split_group_recurrence_none_catchall_inactive_unmatched(
+    tmp_path: Path,
+) -> None:
+    # Catch-all has start_date later than the transaction date and no invoice
+    # matches its amount → unmatched.
+    a_dir = tmp_path / "inv_a"
+    a_dir.mkdir()
+    cats = {
+        "a": Category(
+            name="a",
+            recurrence="none",
+            invoice_folder=a_dir,
+            invoice_parser="pepeenergy",
+            patterns=("ONEOFF",),
+        ),
+        "catchall": Category(
+            name="catchall",
+            recurrence="none",
+            patterns=("ONEOFF",),
+            start_date=date(2027, 1, 1),
+        ),
+    }
+    cfg = _cfg_with_split_groups(categories=cats)
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="ONEOFF VENDOR",
+        amount=Decimal("13.50"),
+    )
+
+    result = match([txn], {"a": []}, cfg)
+
+    assert len(result.items) == 0
+    assert txn in result.unmatched_transactions
+
+
+# --- manual_mappings with amount filter ---
+
+
+def test_manual_mapping_amount_routes_to_different_categories(tmp_path: Path) -> None:
+    # Two transactions share a description but have different amounts. The
+    # list-form manual_mapping routes each to a different category.
+    cats = {
+        "alpha": Category(name="alpha", recurrence="monthly", patterns=()),
+        "beta": Category(name="beta", recurrence="monthly", patterns=()),
+    }
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="alpha", amount=Decimal("75.00")),
+            ManualMapping(category="beta", amount=Decimal("120.00")),
+        )
+    }
+    cfg = _config(categories=cats, manual_mappings=manual)
+
+    txn_a = make_transaction(
+        date=date(2026, 5, 10),
+        description="SHARED DESC",
+        amount=Decimal("75.00"),
+    )
+    txn_b = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED DESC",
+        amount=Decimal("120.00"),
+    )
+
+    result = match([txn_a, txn_b], {}, cfg)
+
+    assert len(result.items) == 2
+    by_txn = {it.transaction: it for it in result.items}
+    assert by_txn[txn_a].category == "alpha"
+    assert by_txn[txn_b].category == "beta"
+
+
+def test_manual_mapping_fallback_catches_non_amount_match(tmp_path: Path) -> None:
+    # A list-form mapping with a no-amount fallback entry catches transactions
+    # whose amount doesn't match any of the earlier amount-filtered entries.
+    cats = {
+        "alpha": Category(name="alpha", recurrence="monthly", patterns=()),
+        "fallback_cat": Category(name="fallback_cat", recurrence="monthly", patterns=()),
+    }
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="alpha", amount=Decimal("75.00")),
+            ManualMapping(category="fallback_cat"),
+        )
+    }
+    cfg = _config(categories=cats, manual_mappings=manual)
+
+    txn_match = make_transaction(
+        date=date(2026, 5, 10),
+        description="SHARED DESC",
+        amount=Decimal("75.00"),
+    )
+    txn_other = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED DESC",
+        amount=Decimal("999.99"),
+    )
+
+    result = match([txn_match, txn_other], {}, cfg)
+
+    assert len(result.items) == 2
+    by_txn = {it.transaction: it for it in result.items}
+    assert by_txn[txn_match].category == "alpha"
+    assert by_txn[txn_other].category == "fallback_cat"
+
+
+def test_manual_mapping_amount_display_overrides_flow_through(tmp_path: Path) -> None:
+    # An entry with display_recurrence / display_period_contains_payment
+    # overrides flows those overrides through to the resulting Item when its
+    # amount filter matches.
+    cats = {
+        "alpha": Category(name="alpha", recurrence="quarterly", patterns=()),
+    }
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(
+                category="alpha",
+                amount=Decimal("100.00"),
+                recurrence="yearly",
+                period_contains_payment=True,
+            ),
+        )
+    }
+    cfg = _config(categories=cats, manual_mappings=manual)
+
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED DESC",
+        amount=Decimal("100.00"),
+    )
+
+    result = match([txn], {}, cfg)
+
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.category == "alpha"
+    assert item.display_recurrence == "yearly"
+    assert item.display_period_contains_payment is True
+
+
+def test_manual_mapping_unused_alerts(tmp_path: Path) -> None:
+    # An amount-specific manual_mapping entry whose (description, amount)
+    # pair has no matching transaction is flagged so users can spot typos
+    # or stale config entries.
+    cats = {
+        "alpha": Category(name="alpha", recurrence="monthly", patterns=()),
+    }
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="alpha", amount=Decimal("75.00")),
+            ManualMapping(category="alpha", amount=Decimal("999.99")),  # unused
+        )
+    }
+    cfg = _config(categories=cats, manual_mappings=manual)
+
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED DESC",
+        amount=Decimal("75.00"),
+    )
+
+    result = match([txn], {}, cfg)
+
+    unused = [a for a in result.alerts if a.kind is AlertKind.UNUSED_MANUAL_MAPPING]
+    assert len(unused) == 1
+    assert unused[0].payload["amount"] == "999.99"
+    assert unused[0].payload["description"] == "SHARED DESC"
+    assert unused[0].payload["category"] == "alpha"
+
+
+def test_manual_mapping_no_amount_entry_not_flagged_as_unused(tmp_path: Path) -> None:
+    # No-amount fallback entries are not flagged as unused (their purpose
+    # is to absorb whatever's left; not firing is normal).
+    cats = {
+        "alpha": Category(name="alpha", recurrence="monthly", patterns=()),
+    }
+    manual = {
+        "SHARED DESC": (ManualMapping(category="alpha"),)
+    }
+    cfg = _config(categories=cats, manual_mappings=manual)
+
+    # No transactions at all.
+    result = match([], {}, cfg)
+
+    assert all(a.kind is not AlertKind.UNUSED_MANUAL_MAPPING for a in result.alerts)
+
+
+def test_manual_mapping_flagged_when_only_invoice_matched_txn_shares_pair(
+    tmp_path: Path,
+) -> None:
+    # The (desc, amount) pair has a matching transaction in the bank
+    # statements, but that transaction was routed by invoice match (NOT by
+    # the manual_mapping). The mapping is still considered unused — it
+    # didn't actually drive any routing decision; the user's expected
+    # invoiceless txn isn't there.
+    cats = _cats_mixed_two_invoiced_two_noninv(tmp_path)
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="agua", amount=Decimal("15.00")),
+        )
+    }
+    cfg = _cfg_with_split_groups(categories=cats, manual_mappings=manual)
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED DESC",
+        amount=Decimal("15.00"),
+    )
+    inv = make_invoice(
+        amount=Decimal("15.00"),
+        invoice_date=date(2026, 5, 10),
+        parser="pepeenergy",
+    )
+
+    result = match([txn], {"agua": [inv], "gas": []}, cfg)
+
+    # The single txn was invoice-matched — the mapping wasn't load-bearing.
+    assert len(result.items) == 1
+    assert result.items[0].invoice is inv
+    assert result.items[0].from_manual_mapping is False
+    # Mapping is flagged as unused.
+    unused = [a for a in result.alerts if a.kind is AlertKind.UNUSED_MANUAL_MAPPING]
+    assert len(unused) == 1
+    assert unused[0].payload["amount"] == "15.00"
+
+
+def test_manual_mapping_not_flagged_when_mapping_routes_a_mixed_leftover(
+    tmp_path: Path,
+) -> None:
+    # Mixed split group: two txns at the same (desc, amount), one invoice
+    # in the group's invoiced member. The first txn invoice-matches; the
+    # second falls to leftover routing and is routed via the manual_mapping
+    # to the invoiced member (from_manual_mapping=True). The mapping IS
+    # load-bearing — no unused alert.
+    cats = _cats_mixed_two_invoiced_two_noninv(tmp_path)
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="agua", amount=Decimal("15.00")),
+        )
+    }
+    cfg = _cfg_with_split_groups(categories=cats, manual_mappings=manual)
+    txn1 = make_transaction(
+        date=date(2026, 5, 5),
+        description="SHARED DESC",
+        amount=Decimal("15.00"),
+    )
+    txn2 = make_transaction(
+        date=date(2026, 5, 20),
+        description="SHARED DESC",
+        amount=Decimal("15.00"),
+    )
+    inv = make_invoice(
+        amount=Decimal("15.00"),
+        invoice_date=date(2026, 5, 1),
+        parser="pepeenergy",
+    )
+
+    result = match([txn1, txn2], {"agua": [inv], "gas": []}, cfg)
+
+    assert len(result.items) == 2
+    routed = [it for it in result.items if it.from_manual_mapping]
+    assert len(routed) == 1
+    # No unused alert: the mapping routed the second txn.
+    assert all(
+        a.kind is not AlertKind.UNUSED_MANUAL_MAPPING for a in result.alerts
+    )
+
+
+def test_manual_mapping_amount_no_match_no_routing(tmp_path: Path) -> None:
+    # A list-form mapping with only amount-filtered entries (no fallback)
+    # does NOT route a transaction whose amount doesn't match.
+    cats = {
+        "alpha": Category(name="alpha", recurrence="monthly", patterns=()),
+    }
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="alpha", amount=Decimal("75.00")),
+        )
+    }
+    cfg = _config(categories=cats, manual_mappings=manual)
+
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="SHARED DESC",
+        amount=Decimal("999.99"),
+    )
+
+    result = match([txn], {}, cfg)
+
+    assert len(result.items) == 0
+    assert txn in result.unmatched_transactions
+
+
+# --- mixed split groups with 2+ non-invoiced members ---
+
+
+def _cats_mixed_two_invoiced_two_noninv(tmp_path: Path) -> dict[str, Category]:
+    """Two invoiced (rec=none) + two non-invoiced (catchall + amount-mapped)."""
+    inv_a = tmp_path / "inv_a"
+    inv_a.mkdir()
+    inv_b = tmp_path / "inv_b"
+    inv_b.mkdir()
+    return {
+        "agua": Category(
+            name="agua",
+            recurrence="none",
+            invoice_folder=inv_a,
+            invoice_parser="pepeenergy",
+            patterns=("SHARED DESC",),
+        ),
+        "gas": Category(
+            name="gas",
+            recurrence="none",
+            invoice_folder=inv_b,
+            invoice_parser="pepeenergy",
+            patterns=("SHARED DESC",),
+        ),
+        "camaras": Category(
+            name="camaras",
+            recurrence="none",
+            patterns=("SHARED DESC",),
+        ),
+        "comunidad": Category(
+            name="comunidad",
+            recurrence="monthly",
+            patterns=("SHARED DESC",),
+        ),
+    }
+
+
+def test_mixed_split_group_two_noninv_amount_routes_to_mapped_category(
+    tmp_path: Path,
+) -> None:
+    # User scenario: invoiced members disambiguate by amount via real invoices;
+    # one specific amount routes to a non-invoiced member ("camaras") via
+    # manual_mapping; the no-amount fallback entry catches everything else
+    # and routes it to the other non-invoiced member ("comunidad").
+    cats = _cats_mixed_two_invoiced_two_noninv(tmp_path)
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="camaras", amount=Decimal("50.00")),
+            ManualMapping(category="comunidad"),
+        )
+    }
+    cfg = _cfg_with_split_groups(categories=cats, manual_mappings=manual)
+
+    txn_agua = make_transaction(
+        date=date(2026, 5, 5),
+        description="SHARED DESC",
+        amount=Decimal("75.00"),
+    )
+    txn_gas = make_transaction(
+        date=date(2026, 5, 10),
+        description="SHARED DESC",
+        amount=Decimal("99.00"),
+    )
+    txn_camaras = make_transaction(
+        date=date(2026, 5, 15),
+        description="SHARED DESC",
+        amount=Decimal("50.00"),
+    )
+    txn_comunidad = make_transaction(
+        date=date(2026, 5, 20),
+        description="SHARED DESC",
+        amount=Decimal("125.00"),
+    )
+    inv_agua = make_invoice(
+        amount=Decimal("75.00"),
+        invoice_date=date(2026, 5, 1),
+        parser="pepeenergy",
+    )
+    inv_gas = make_invoice(
+        amount=Decimal("99.00"),
+        invoice_date=date(2026, 5, 8),
+        parser="pepeenergy",
+    )
+
+    result = match(
+        [txn_agua, txn_gas, txn_camaras, txn_comunidad],
+        {"agua": [inv_agua], "gas": [inv_gas]},
+        cfg,
+    )
+
+    assert len(result.items) == 4
+    by_txn = {it.transaction: it for it in result.items}
+    assert by_txn[txn_agua].category == "agua"
+    assert by_txn[txn_agua].invoice is inv_agua
+    assert by_txn[txn_gas].category == "gas"
+    assert by_txn[txn_gas].invoice is inv_gas
+    assert by_txn[txn_camaras].category == "camaras"
+    assert by_txn[txn_camaras].invoice is None
+    assert by_txn[txn_comunidad].category == "comunidad"
+    assert by_txn[txn_comunidad].invoice is None
+    assert all(
+        a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts
+    )
+
+
+def test_mixed_split_group_two_noninv_unmapped_leftover_alerts(
+    tmp_path: Path,
+) -> None:
+    # 2 non-invoiced members but the list-form mapping has only amount-filtered
+    # entries (no no-amount fallback). A leftover whose amount doesn't match
+    # any entry has nowhere to route → EXPENSE_MISSING_INVOICE + unmatched.
+    cats = _cats_mixed_two_invoiced_two_noninv(tmp_path)
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="camaras", amount=Decimal("50.00")),
+            ManualMapping(category="comunidad", amount=Decimal("125.00")),
+        )
+    }
+    cfg = _cfg_with_split_groups(categories=cats, manual_mappings=manual)
+
+    txn = make_transaction(
+        date=date(2026, 5, 20),
+        description="SHARED DESC",
+        amount=Decimal("999.99"),
+    )
+
+    result = match([txn], {"agua": [], "gas": []}, cfg)
+
+    assert len(result.items) == 0
+    assert txn in result.unmatched_transactions
+    assert any(
+        a.kind is AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts
+    )
+
+
+def test_mixed_split_group_two_noninv_implicit_catchall_routes_unmapped(
+    tmp_path: Path,
+) -> None:
+    # Implicit catch-all: exactly one non-invoiced member is NOT referenced
+    # by any manual_mapping entry keyed by the group's patterns → that
+    # member auto-acts as the catch-all without needing an explicit
+    # no-amount fallback entry.
+    cats = _cats_mixed_two_invoiced_two_noninv(tmp_path)
+    # 'camaras' is the only noninv referenced in the mapping. 'comunidad'
+    # is the implicit catch-all.
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="camaras", amount=Decimal("50.00")),
+        )
+    }
+    cfg = _cfg_with_split_groups(categories=cats, manual_mappings=manual)
+
+    txn_camaras = make_transaction(
+        date=date(2026, 5, 15),
+        description="SHARED DESC",
+        amount=Decimal("50.00"),
+    )
+    txn_anything_else = make_transaction(
+        date=date(2026, 5, 20),
+        description="SHARED DESC",
+        amount=Decimal("125.00"),
+    )
+
+    result = match([txn_camaras, txn_anything_else], {"agua": [], "gas": []}, cfg)
+
+    assert len(result.items) == 2
+    by_txn = {it.transaction: it.category for it in result.items}
+    assert by_txn[txn_camaras] == "camaras"
+    assert by_txn[txn_anything_else] == "comunidad"
+    assert all(
+        a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts
+    )
+
+
+def test_mixed_split_group_leftover_mapping_to_invoiced_member_routes_without_invoice(
+    tmp_path: Path,
+) -> None:
+    # Manual_mapping is the authoritative routing override. When a leftover's
+    # mapping points to an INVOICED member of the group (no matching invoice
+    # in the folder, e.g. a one-off payment that happens to share a pattern
+    # and amount with the invoiced flow), the matcher routes the Item to
+    # that member without an invoice and marks it from_manual_mapping=True
+    # so the runner doesn't filter it out.
+    cats = _cats_mixed_two_invoiced_two_noninv(tmp_path)
+    manual = {
+        "SHARED DESC": (
+            ManualMapping(category="agua", amount=Decimal("99.99")),
+            ManualMapping(category="comunidad"),
+        )
+    }
+    cfg = _cfg_with_split_groups(categories=cats, manual_mappings=manual)
+
+    txn = make_transaction(
+        date=date(2026, 5, 20),
+        description="SHARED DESC",
+        amount=Decimal("99.99"),
+    )
+
+    result = match([txn], {"agua": [], "gas": []}, cfg)
+
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.category == "agua"
+    assert item.invoice is None
+    assert item.from_manual_mapping is True
+    # No missing-invoice alert: the user has explicitly authored this
+    # routing and is saying "no invoice expected here".
+    assert all(
+        a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts
+    )

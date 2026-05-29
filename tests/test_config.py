@@ -91,12 +91,19 @@ def test_invalid_recurrence_value(tmp_path: Path) -> None:
         load_config(p)
 
 
-def test_manual_mapping_collides_with_pattern_rejected(tmp_path: Path) -> None:
+def test_manual_mapping_key_equal_to_pattern_accepted(tmp_path: Path) -> None:
+    # The previous collision check was overly strict — manual_mapping keys
+    # may now equal pattern strings. The mapping is consulted by the matcher
+    # in places where it's meaningful (split-group leftover routing, display
+    # overrides on invoice-matched txns).
     payload = _valid_payload(tmp_path)
     payload["manual_mappings"] = {"PEPE ENERGY INVOICE": {"category": "electricity"}}
     p = _write_config(tmp_path, payload)
-    with pytest.raises(ConfigError, match="collide"):
-        load_config(p)
+
+    cfg = load_config(p)
+
+    assert "PEPE ENERGY INVOICE" in cfg.manual_mappings
+    assert cfg.manual_mappings["PEPE ENERGY INVOICE"][0].category == "electricity"
 
 
 def test_cache_dir_defaults_to_sibling_of_config(tmp_path: Path) -> None:
@@ -211,7 +218,7 @@ def test_shared_pattern_forms_split_group(tmp_path: Path) -> None:
     grp = cfg.split_groups[0]
     assert tuple(m.name for m in grp.members) == ("water", "tax")  # config order
     assert grp.recurrence == "quarterly"
-    assert grp.has_invoices is False
+    assert grp.kind == "none_invoiced"
 
 
 def test_split_group_with_invoices(tmp_path: Path) -> None:
@@ -237,7 +244,7 @@ def test_split_group_with_invoices(tmp_path: Path) -> None:
     cfg = load_config(p)
 
     assert len(cfg.split_groups) == 1
-    assert cfg.split_groups[0].has_invoices is True
+    assert cfg.split_groups[0].kind == "all_invoiced"
 
 
 def test_split_group_with_extra_non_shared_patterns_accepted(tmp_path: Path) -> None:
@@ -265,7 +272,12 @@ def test_split_group_conflicting_peer_sets_rejected(tmp_path: Path) -> None:
         load_config(p)
 
 
-def test_split_group_mismatched_recurrence_rejected(tmp_path: Path) -> None:
+def test_split_group_mismatched_recurrence_rejected_when_none_invoiced(
+    tmp_path: Path,
+) -> None:
+    # `none_invoiced` groups rank-assign by amount per period bucket, which
+    # requires a single shared period definition — mixed recurrences are
+    # rejected only for this kind.
     payload = _valid_payload(tmp_path)
     payload["categories"]["x"] = {"recurrence": "quarterly", "patterns": ["QUARTERLY INVOICE"]}
     payload["categories"]["y"] = {"recurrence": "monthly", "patterns": ["QUARTERLY INVOICE"]}
@@ -273,6 +285,74 @@ def test_split_group_mismatched_recurrence_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="same recurrence"):
         load_config(p)
+
+
+def test_split_group_mismatched_recurrence_accepted_when_all_invoiced(
+    tmp_path: Path,
+) -> None:
+    # `all_invoiced` groups never bucket — they route per transaction by
+    # amount. Mixed member recurrences are allowed; group.recurrence falls
+    # back to "none" so the matcher uses the per-transaction path.
+    payload = _valid_payload(tmp_path)
+    inv_x = tmp_path / "inv_x"
+    inv_x.mkdir()
+    inv_y = tmp_path / "inv_y"
+    inv_y.mkdir()
+    payload["categories"]["x"] = {
+        "recurrence": "quarterly",
+        "patterns": ["QUARTERLY INVOICE"],
+        "invoice_folder": str(inv_x),
+        "invoice_parser": "pepeenergy",
+    }
+    payload["categories"]["y"] = {
+        "recurrence": "monthly",
+        "patterns": ["QUARTERLY INVOICE"],
+        "invoice_folder": str(inv_y),
+        "invoice_parser": "pepeenergy",
+    }
+    p = _write_config(tmp_path, payload)
+
+    cfg = load_config(p)
+
+    assert len(cfg.split_groups) == 1
+    sg = cfg.split_groups[0]
+    assert sg.kind == "all_invoiced"
+    assert sg.recurrence == "none"
+    # Member recurrences are preserved on the Category itself.
+    assert cfg.categories["x"].recurrence == "quarterly"
+    assert cfg.categories["y"].recurrence == "monthly"
+
+
+def test_split_group_mismatched_recurrence_accepted_when_mixed(
+    tmp_path: Path,
+) -> None:
+    # `mixed` groups route per transaction whenever group.recurrence == "none".
+    # When members have non-uniform recurrences, group.recurrence falls back
+    # to "none" so the per-transaction path is used. Each member's own
+    # recurrence drives check_recurrence and the report's display.
+    payload = _valid_payload(tmp_path)
+    inv_x = tmp_path / "inv_x"
+    inv_x.mkdir()
+    payload["categories"]["x"] = {
+        "recurrence": "none",
+        "patterns": ["SHARED"],
+        "invoice_folder": str(inv_x),
+        "invoice_parser": "pepeenergy",
+    }
+    payload["categories"]["catchall"] = {
+        "recurrence": "monthly",
+        "patterns": ["SHARED"],
+    }
+    p = _write_config(tmp_path, payload)
+
+    cfg = load_config(p)
+
+    assert len(cfg.split_groups) == 1
+    sg = cfg.split_groups[0]
+    assert sg.kind == "mixed"
+    assert sg.recurrence == "none"
+    assert cfg.categories["x"].recurrence == "none"
+    assert cfg.categories["catchall"].recurrence == "monthly"
 
 
 def test_split_group_recurrence_none_rejected_without_invoices(tmp_path: Path) -> None:
@@ -315,28 +395,93 @@ def test_split_group_recurrence_none_allowed_with_invoices(tmp_path: Path) -> No
     assert len(cfg.split_groups) == 1
     sg = cfg.split_groups[0]
     assert sg.recurrence == "none"
-    assert sg.has_invoices is True
+    assert sg.kind == "all_invoiced"
     assert {m.name for m in sg.members} == {"x", "y"}
 
 
-def test_split_group_mixed_invoice_folder_rejected(tmp_path: Path) -> None:
+def test_split_group_mixed_invoices_accepted(tmp_path: Path) -> None:
+    # A split group with one invoiced member and one non-invoiced (catch-all)
+    # member is accepted. The matcher routes invoice-matched transactions to
+    # the invoiced member and any leftover to the catch-all.
     payload = _valid_payload(tmp_path)
-    inv = tmp_path / "inv_x"
-    inv.mkdir()
-    payload["categories"]["x"] = {
-        "recurrence": "quarterly",
-        "patterns": ["QUARTERLY INVOICE"],
-        "invoice_folder": str(inv),
+    inv_a = tmp_path / "inv_a"
+    inv_a.mkdir()
+    payload["categories"]["a"] = {
+        "recurrence": "monthly",
+        "patterns": ["SHARED PATTERN"],
+        "invoice_folder": str(inv_a),
         "invoice_parser": "pepeenergy",
     }
-    payload["categories"]["y"] = {
-        "recurrence": "quarterly",
-        "patterns": ["QUARTERLY INVOICE"],
+    payload["categories"]["catchall"] = {
+        "recurrence": "monthly",
+        "patterns": ["SHARED PATTERN"],
     }
     p = _write_config(tmp_path, payload)
 
-    with pytest.raises(ConfigError, match="invoice"):
-        load_config(p)
+    cfg = load_config(p)
+
+    assert len(cfg.split_groups) == 1
+    sg = cfg.split_groups[0]
+    assert sg.kind == "mixed"
+    assert {m.name for m in sg.members} == {"a", "catchall"}
+
+
+def test_split_group_mixed_with_recurrence_none_accepted(tmp_path: Path) -> None:
+    # Mixed groups (1 invoiced + 1 noninv catch-all) accept recurrence "none"
+    # because the catch-all absorbs any non-invoice-matched transaction; no
+    # period bucketing is needed for the single-catch-all case.
+    payload = _valid_payload(tmp_path)
+    inv_a = tmp_path / "inv_a"
+    inv_a.mkdir()
+    payload["categories"]["a"] = {
+        "recurrence": "none",
+        "patterns": ["ONEOFF"],
+        "invoice_folder": str(inv_a),
+        "invoice_parser": "pepeenergy",
+    }
+    payload["categories"]["catchall"] = {
+        "recurrence": "none",
+        "patterns": ["ONEOFF"],
+    }
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    assert len(cfg.split_groups) == 1
+    sg = cfg.split_groups[0]
+    assert sg.kind == "mixed"
+    assert sg.recurrence == "none"
+
+
+def test_split_group_mixed_with_two_noninv_accepted(tmp_path: Path) -> None:
+    # Mixed groups may have any number of non-invoiced members. Leftover
+    # routing is delegated to manual_mappings (amount-based), so the load
+    # rule that previously restricted to exactly one non-invoiced member is
+    # gone. The matcher still requires every leftover to resolve via
+    # manual_mappings — that's a runtime alert, not a config error.
+    payload = _valid_payload(tmp_path)
+    inv_a = tmp_path / "inv_a"
+    inv_a.mkdir()
+    payload["categories"]["a"] = {
+        "recurrence": "monthly",
+        "patterns": ["SHARED"],
+        "invoice_folder": str(inv_a),
+        "invoice_parser": "pepeenergy",
+    }
+    payload["categories"]["b"] = {
+        "recurrence": "monthly",
+        "patterns": ["SHARED"],
+    }
+    payload["categories"]["c"] = {
+        "recurrence": "monthly",
+        "patterns": ["SHARED"],
+    }
+    p = _write_config(tmp_path, payload)
+
+    cfg = load_config(p)
+
+    assert len(cfg.split_groups) == 1
+    sg = cfg.split_groups[0]
+    assert sg.kind == "mixed"
+    assert {m.name for m in sg.members} == {"a", "b", "c"}
 
 
 # --- period_contains_payment flag ---
@@ -385,7 +530,9 @@ def test_manual_mapping_routes_with_category_only(tmp_path: Path) -> None:
     payload["manual_mappings"] = {"FOO": {"category": "electricity"}}
     p = _write_config(tmp_path, payload)
     cfg = load_config(p)
-    m = cfg.manual_mappings["FOO"]
+    entries = cfg.manual_mappings["FOO"]
+    assert len(entries) == 1
+    m = entries[0]
     assert m.category == "electricity"
     assert m.recurrence is None
     assert m.period_contains_payment is None
@@ -396,7 +543,7 @@ def test_manual_mapping_carries_recurrence_override(tmp_path: Path) -> None:
     payload["manual_mappings"] = {"FOO": {"category": "electricity", "recurrence": "yearly"}}
     p = _write_config(tmp_path, payload)
     cfg = load_config(p)
-    assert cfg.manual_mappings["FOO"].recurrence == "yearly"
+    assert cfg.manual_mappings["FOO"][0].recurrence == "yearly"
 
 
 def test_manual_mapping_carries_period_contains_payment(tmp_path: Path) -> None:
@@ -410,7 +557,7 @@ def test_manual_mapping_carries_period_contains_payment(tmp_path: Path) -> None:
     }
     p = _write_config(tmp_path, payload)
     cfg = load_config(p)
-    assert cfg.manual_mappings["FOO"].period_contains_payment is True
+    assert cfg.manual_mappings["FOO"][0].period_contains_payment is True
 
 
 def test_manual_mapping_unknown_category_rejected(tmp_path: Path) -> None:
@@ -458,3 +605,159 @@ def test_manual_mapping_pcp_with_effective_none_recurrence_rejected(tmp_path: Pa
     p = _write_config(tmp_path, payload)
     with pytest.raises(ConfigError, match="period_contains_payment"):
         load_config(p)
+
+
+def test_resolve_manual_mapping_returns_entry_for_known_description(
+    tmp_path: Path,
+) -> None:
+    from decimal import Decimal as _Decimal
+
+    from home_expenses.config import resolve_manual_mapping
+
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "UNIQUE ANNUAL CHARGE": {"category": "electricity"},
+    }
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+
+    mapping = resolve_manual_mapping("UNIQUE ANNUAL CHARGE", _Decimal("100.00"), cfg)
+    assert mapping is not None
+    assert mapping.category == "electricity"
+    # No amount filter on the entry, so any amount resolves to it.
+    assert mapping.amount is None
+
+
+def test_resolve_manual_mapping_returns_none_for_unknown_description(
+    tmp_path: Path,
+) -> None:
+    from decimal import Decimal as _Decimal
+
+    from home_expenses.config import resolve_manual_mapping
+
+    payload = _valid_payload(tmp_path)
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+
+    assert resolve_manual_mapping("NOT IN CONFIG", _Decimal("5.00"), cfg) is None
+
+
+def test_manual_mapping_list_form_parses(tmp_path: Path) -> None:
+    from decimal import Decimal as _Decimal
+
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "SHARED DESC": [
+            {"category": "electricity", "amount": "75.00"},
+            {"category": "electricity", "amount": "120.00"},
+            {"category": "electricity"},
+        ],
+    }
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+    entries = cfg.manual_mappings["SHARED DESC"]
+    assert len(entries) == 3
+    assert entries[0].amount == _Decimal("75.00")
+    assert entries[1].amount == _Decimal("120.00")
+    assert entries[2].amount is None
+
+
+def test_manual_mapping_empty_list_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {"SHARED DESC": []}
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="at least one entry"):
+        load_config(p)
+
+
+def test_manual_mapping_two_no_amount_entries_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "SHARED DESC": [
+            {"category": "electricity"},
+            {"category": "electricity"},
+        ],
+    }
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="at most one entry without 'amount'"):
+        load_config(p)
+
+
+def test_manual_mapping_no_amount_entry_not_last_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "SHARED DESC": [
+            {"category": "electricity"},
+            {"category": "electricity", "amount": "75.00"},
+        ],
+    }
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="must be the last entry"):
+        load_config(p)
+
+
+def test_manual_mapping_amount_not_decimal_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "SHARED DESC": [{"category": "electricity", "amount": "not-a-number"}],
+    }
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="must be a decimal string"):
+        load_config(p)
+
+
+def test_manual_mapping_entry_with_unknown_category_rejected(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "SHARED DESC": [{"category": "does-not-exist", "amount": "10.00"}],
+    }
+    p = _write_config(tmp_path, payload)
+    with pytest.raises(ConfigError, match="unknown category"):
+        load_config(p)
+
+
+def test_resolve_manual_mapping_first_amount_match_wins(tmp_path: Path) -> None:
+    from decimal import Decimal as _Decimal
+
+    from home_expenses.config import resolve_manual_mapping
+
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "SHARED DESC": [
+            {"category": "electricity", "amount": "75.00"},
+            {"category": "electricity", "amount": "120.00"},
+        ],
+    }
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+
+    m = resolve_manual_mapping("SHARED DESC", _Decimal("75.00"), cfg)
+    assert m is not None and m.amount == _Decimal("75.00")
+
+    m = resolve_manual_mapping("SHARED DESC", _Decimal("120.00"), cfg)
+    assert m is not None and m.amount == _Decimal("120.00")
+
+    m = resolve_manual_mapping("SHARED DESC", _Decimal("999.00"), cfg)
+    assert m is None
+
+
+def test_resolve_manual_mapping_fallback_catches_non_match(tmp_path: Path) -> None:
+    from decimal import Decimal as _Decimal
+
+    from home_expenses.config import resolve_manual_mapping
+
+    payload = _valid_payload(tmp_path)
+    payload["manual_mappings"] = {
+        "SHARED DESC": [
+            {"category": "electricity", "amount": "75.00"},
+            {"category": "electricity"},
+        ],
+    }
+    p = _write_config(tmp_path, payload)
+    cfg = load_config(p)
+
+    m = resolve_manual_mapping("SHARED DESC", _Decimal("75.00"), cfg)
+    assert m is not None and m.amount == _Decimal("75.00")
+
+    m = resolve_manual_mapping("SHARED DESC", _Decimal("999.00"), cfg)
+    assert m is not None and m.amount is None

@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,6 +14,7 @@ Recurrence = Literal["monthly", "bimonthly", "quarterly", "yearly", "none"]
 _VALID_RECURRENCES: frozenset[str] = frozenset(
     ("monthly", "bimonthly", "quarterly", "yearly", "none")
 )
+SplitGroupKind = Literal["all_invoiced", "none_invoiced", "mixed"]
 
 
 class ConfigError(ValueError):
@@ -95,14 +97,15 @@ class Category:
 @dataclass(frozen=True)
 class SplitGroup:
     members: tuple[Category, ...]  # in config order
-    recurrence: Recurrence  # "none" allowed only when has_invoices is True
-    has_invoices: bool
+    recurrence: Recurrence  # "none" allowed only when kind == "all_invoiced"
+    kind: SplitGroupKind
     patterns: tuple[str, ...]  # patterns shared across all members
 
 
 @dataclass(frozen=True)
 class ManualMapping:
     category: str
+    amount: Decimal | None = None
     recurrence: Recurrence | None = None
     period_contains_payment: bool | None = None
 
@@ -120,7 +123,7 @@ class Config:
     match_window_days_default: int
     cache_dir: Path
     categories: dict[str, Category] = field(default_factory=dict)
-    manual_mappings: dict[str, ManualMapping] = field(default_factory=dict)
+    manual_mappings: dict[str, tuple[ManualMapping, ...]] = field(default_factory=dict)
     split_groups: tuple[SplitGroup, ...] = ()
 
 
@@ -229,24 +232,33 @@ def load_config(path: Path) -> Config:
         members = tuple(categories[n] for n in categories if n in peer_set)
         member_names = [m.name for m in members]
         recs = {m.recurrence for m in members}
-        if len(recs) != 1:
+        has_inv_count = sum(1 for m in members if m.invoice_folder is not None)
+        if has_inv_count == len(members):
+            kind: SplitGroupKind = "all_invoiced"
+        elif has_inv_count == 0:
+            kind = "none_invoiced"
+        else:
+            kind = "mixed"
+        # `none_invoiced` groups use rank-based per-period bucketing, which
+        # structurally requires every member to share one recurrence
+        # ("the bigger amount in each period goes to member A"). `all_invoiced`
+        # routes per transaction by amount and never buckets; `mixed` routes
+        # per transaction whenever group.recurrence is "none". For those two
+        # kinds, mixed member recurrences are allowed — we just fall back to
+        # group.recurrence = "none" so the matcher takes the per-transaction
+        # path. Each member's own recurrence is preserved on the Category and
+        # still drives check_recurrence and the report's display.
+        if kind == "none_invoiced" and len(recs) != 1:
             raise ConfigError(
-                f"{path}: split group {member_names} members must all "
-                f"have the same recurrence (got {sorted(recs)})"
+                f"{path}: none_invoiced split group {member_names} members "
+                f"must all have the same recurrence (got {sorted(recs)})"
             )
-        (rec,) = recs
-        has_inv = {m.invoice_folder is not None for m in members}
-        if len(has_inv) != 1:
-            raise ConfigError(
-                f"{path}: split group {member_names} must either all "
-                f"have invoice_folder set or none of them"
-            )
-        has_invoices = has_inv.pop()
-        # Recurrence "none" is only viable when every member has an invoice
-        # folder: amount alone disambiguates which category each transaction
-        # belongs to, so the period-based rank-fallback path never fires.
-        # Without invoices the matcher needs a real recurrence to bucket by.
-        if rec == "none" and not has_invoices:
+        rec: Recurrence = next(iter(recs)) if len(recs) == 1 else "none"
+        # Recurrence "none" is allowed for all_invoiced (amount disambiguates) and
+        # for mixed (the single catch-all absorbs any non-invoice-matched txn, so
+        # no period bucketing is needed). It is rejected for none_invoiced (no
+        # disambiguator available).
+        if rec == "none" and kind == "none_invoiced":
             raise ConfigError(
                 f"{path}: split group {member_names} cannot have recurrence "
                 f"'none' without invoice_folder on every member"
@@ -255,61 +267,108 @@ def load_config(path: Path) -> Config:
             SplitGroup(
                 members=members,
                 recurrence=rec,
-                has_invoices=has_invoices,
+                kind=kind,
                 patterns=tuple(shared_patterns),
             )
         )
 
     mm_raw = _require_dict(raw["manual_mappings"], "manual_mappings", path)
-    manual_mappings: dict[str, ManualMapping] = {}
-    for desc, entry in mm_raw.items():
-        if isinstance(entry, str):
+    manual_mappings: dict[str, tuple[ManualMapping, ...]] = {}
+    for desc, raw_entry in mm_raw.items():
+        if isinstance(raw_entry, str):
             raise ConfigError(
                 f"{path}: manual_mappings entry for '{desc}' must be an object "
-                f"with at least a 'category' field; the legacy short string "
-                f"form is no longer supported"
+                f"or a list; the legacy short string form is no longer supported"
             )
-        _require_dict(entry, f"manual_mappings['{desc}']", path)
+        if isinstance(raw_entry, list):
+            raw_entries = raw_entry
+            if len(raw_entries) == 0:
+                raise ConfigError(
+                    f"{path}: manual_mappings['{desc}'] must have at least one entry"
+                )
+        else:
+            _require_dict(raw_entry, f"manual_mappings['{desc}']", path)
+            raw_entries = [raw_entry]
 
-        cat_name = entry.get("category")
-        if not isinstance(cat_name, str) or cat_name == "":
-            raise ConfigError(f"{path}: manual_mappings['{desc}'] missing required 'category'")
-        if cat_name not in categories:
+        parsed_entries: list[ManualMapping] = []
+        for i, entry in enumerate(raw_entries):
+            _require_dict(entry, f"manual_mappings['{desc}'][{i}]", path)
+
+            cat_name = entry.get("category")
+            if not isinstance(cat_name, str) or cat_name == "":
+                raise ConfigError(
+                    f"{path}: manual_mappings['{desc}'][{i}] missing required 'category'"
+                )
+            if cat_name not in categories:
+                raise ConfigError(
+                    f"{path}: manual_mappings['{desc}'][{i}] references unknown "
+                    f"category '{cat_name}'"
+                )
+
+            amount_raw = entry.get("amount")
+            amount_val: Decimal | None = None
+            if amount_raw is not None:
+                if not isinstance(amount_raw, str):
+                    raise ConfigError(
+                        f"{path}: manual_mappings['{desc}'][{i}] 'amount' must be a "
+                        f"decimal string (got {type(amount_raw).__name__})"
+                    )
+                try:
+                    amount_val = Decimal(amount_raw)
+                except InvalidOperation as e:
+                    raise ConfigError(
+                        f"{path}: manual_mappings['{desc}'][{i}] 'amount' must be a "
+                        f"decimal string (got {amount_raw!r})"
+                    ) from e
+
+            recurrence_raw = entry.get("recurrence")
+            if recurrence_raw is not None and recurrence_raw not in _VALID_RECURRENCES:
+                raise ConfigError(
+                    f"{path}: manual_mappings['{desc}'][{i}] has invalid recurrence "
+                    f"'{recurrence_raw}'"
+                )
+
+            pcp = entry.get("period_contains_payment")
+            if pcp is not None and not isinstance(pcp, bool):
+                raise ConfigError(
+                    f"{path}: manual_mappings['{desc}'][{i}] period_contains_payment "
+                    f"must be a boolean"
+                )
+
+            effective_recurrence = recurrence_raw or categories[cat_name].recurrence
+            if pcp is True and effective_recurrence == "none":
+                raise ConfigError(
+                    f"{path}: manual_mappings['{desc}'][{i}] has "
+                    f"'period_contains_payment: true' but the effective recurrence is 'none'"
+                )
+
+            parsed_entries.append(
+                ManualMapping(
+                    category=cat_name,
+                    amount=amount_val,
+                    recurrence=recurrence_raw,
+                    period_contains_payment=pcp,
+                )
+            )
+
+        # Validate list-form invariants: at most one no-amount entry, and if
+        # present it must be last (entries below it would be unreachable).
+        no_amount_indices = [i for i, e in enumerate(parsed_entries) if e.amount is None]
+        if len(no_amount_indices) > 1:
             raise ConfigError(
-                f"{path}: manual_mappings['{desc}'] references unknown category '{cat_name}'"
+                f"{path}: manual_mappings['{desc}'] may contain at most one entry "
+                f"without 'amount' (found {len(no_amount_indices)})"
             )
-
-        recurrence_raw = entry.get("recurrence")
-        if recurrence_raw is not None and recurrence_raw not in _VALID_RECURRENCES:
+        if (
+            len(no_amount_indices) == 1
+            and no_amount_indices[0] != len(parsed_entries) - 1
+        ):
             raise ConfigError(
-                f"{path}: manual_mappings['{desc}'] has invalid recurrence '{recurrence_raw}'"
+                f"{path}: manual_mappings['{desc}'] entry without 'amount' must be "
+                f"the last entry; entries after it would be unreachable"
             )
 
-        pcp = entry.get("period_contains_payment")
-        if pcp is not None and not isinstance(pcp, bool):
-            raise ConfigError(
-                f"{path}: manual_mappings['{desc}'] period_contains_payment must be a boolean"
-            )
-
-        effective_recurrence = recurrence_raw or categories[cat_name].recurrence
-        if pcp is True and effective_recurrence == "none":
-            raise ConfigError(
-                f"{path}: manual_mappings['{desc}'] has 'period_contains_payment: true' "
-                f"but the effective recurrence is 'none'"
-            )
-
-        manual_mappings[desc] = ManualMapping(
-            category=cat_name,
-            recurrence=recurrence_raw,
-            period_contains_payment=pcp,
-        )
-
-    for desc in manual_mappings:
-        if desc in pattern_owners:
-            raise ConfigError(
-                f"{path}: manual_mapping key '{desc}' collides with pattern "
-                f"in category '{pattern_owners[desc][0]}'"
-            )
+        manual_mappings[desc] = tuple(parsed_entries)
 
     return Config(
         currency=raw["currency"],
@@ -320,3 +379,26 @@ def load_config(path: Path) -> Config:
         manual_mappings=manual_mappings,
         split_groups=tuple(split_groups),
     )
+
+
+def resolve_manual_mapping(
+    description: str,
+    amount: Decimal,
+    config: Config,
+) -> ManualMapping | None:
+    """Pick the manual_mapping entry that applies to a transaction.
+
+    Walks the tuple of entries for this description in declaration order.
+    The first entry whose ``amount`` equals the transaction's amount wins.
+    An entry without ``amount`` matches any amount and acts as the fallback;
+    loader validation guarantees such an entry, if present, is last.
+    """
+    entries = config.manual_mappings.get(description)
+    if entries is None:
+        return None
+    for entry in entries:
+        if entry.amount is None:
+            return entry
+        if entry.amount == amount:
+            return entry
+    return None

@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from itertools import combinations
 
-from home_expenses.config import Config, SplitGroup
+from home_expenses.config import Category, Config, SplitGroup, resolve_manual_mapping
 from home_expenses.models import (
     Alert,
     AlertKind,
@@ -38,6 +38,7 @@ def match(
     alerts: list[Alert] = []
     unmatched: list[Transaction] = []
     deferred: dict[int, tuple[SplitGroup, list[Transaction]]] = {}
+    deferred_mixed: dict[int, tuple[SplitGroup, list[Transaction]]] = {}
     # Resolve same-amount ambiguity globally before the per-transaction pass.
     # Maps id(txn) -> (category, invoice) for transactions whose match was
     # determined by chronological zip across a (category, amount) bucket.
@@ -52,7 +53,7 @@ def match(
     for txn in transactions:
         group = _split_group_for(txn, config)
         if group is not None:
-            if group.has_invoices:
+            if group.kind == "all_invoiced":
                 allowed = frozenset(m.name for m in group.members)
                 chrono = pre_assigned.get(id(txn))
                 if chrono is not None and chrono[0] in allowed:
@@ -85,8 +86,13 @@ def match(
                         )
                 unmatched.append(txn)
                 continue
-            # rank-based: defer until we have the full period bucket
-            entry = deferred.setdefault(id(group), (group, []))
+            if group.kind == "none_invoiced":
+                # rank-based: defer until we have the full period bucket
+                entry = deferred.setdefault(id(group), (group, []))
+                entry[1].append(txn)
+                continue
+            # kind == "mixed": defer for the mixed resolver below.
+            entry = deferred_mixed.setdefault(id(group), (group, []))
             entry[1].append(txn)
             continue
 
@@ -95,7 +101,7 @@ def match(
         if chrono is not None:
             category_name, invoice = chrono
             consumed.add((category_name, invoice.content_hash))
-            mapping = config.manual_mappings.get(txn.description)
+            mapping = resolve_manual_mapping(txn.description, txn.amount, config)
             items.append(
                 Item(
                     transaction=txn,
@@ -123,7 +129,7 @@ def match(
             # If a manual mapping pinned this txn to that category, carry
             # its display overrides (recurrence / period_contains_payment)
             # through to the resulting Item.
-            mapping = config.manual_mappings.get(txn.description)
+            mapping = resolve_manual_mapping(txn.description, txn.amount, config)
             items.append(
                 Item(
                     transaction=txn,
@@ -166,7 +172,7 @@ def match(
                 )
             continue
 
-        mapping = config.manual_mappings.get(txn.description)
+        mapping = resolve_manual_mapping(txn.description, txn.amount, config)
         if mapping is None:
             # Silently drop transactions that don't match any configured category.
             unmatched.append(txn)
@@ -179,6 +185,7 @@ def match(
                 invoice=None,
                 display_recurrence=mapping.recurrence,
                 display_period_contains_payment=mapping.period_contains_payment,
+                from_manual_mapping=True,
             )
         )
 
@@ -247,6 +254,204 @@ def match(
             for cat, t in zip(active, ranked, strict=True):
                 items.append(Item(transaction=t, category=cat.name, invoice=None))
 
+    # Mixed pass: assign deferred mixed-group transactions per period bucket.
+    for _, (group, txns) in deferred_mixed.items():
+        active_invoiced_all = [m for m in group.members if m.invoice_folder is not None]
+        noninv_members = [m for m in group.members if m.invoice_folder is None]
+        implicit_catchall = _implicit_catchall_for(group, noninv_members, config)
+
+        # Per-transaction routing kicks in when:
+        # - group.recurrence == "none" (no periods to bucket by), OR
+        # - there are 2+ non-invoiced members (leftover routing is decided per
+        #   manual_mapping by amount, not by period bucket-size invariants).
+        # The per-period bucket path (further below) only handles the
+        # "1 non-invoiced + real recurrence" case where the sanity check
+        # `len(remaining) == 1` is meaningful.
+        if group.recurrence == "none" or len(noninv_members) >= 2:
+            # Per-transaction routing. Try the group's invoiced members by
+            # amount; on miss, route the leftover via _route_mixed_leftover.
+            for t in txns:
+                active_invoiced = [
+                    m for m in active_invoiced_all
+                    if m.start_date is None or m.start_date <= t.date
+                ]
+                active_invoiced_names = frozenset(m.name for m in active_invoiced)
+                pre = pre_assigned.get(id(t))
+                if pre is not None and pre[0] in active_invoiced_names:
+                    pre_cat, pre_inv = pre
+                    items.append(
+                        Item(transaction=t, category=pre_cat, invoice=pre_inv)
+                    )
+                    continue
+                inv_cat, inv_match = _try_invoice_match(
+                    t, inv_lists, config, alerts, consumed,
+                    restrict_to=active_invoiced_names,
+                )
+                if inv_match is not None and inv_cat is not None:
+                    consumed.add((inv_cat, inv_match.content_hash))
+                    items.append(
+                        Item(transaction=t, category=inv_cat, invoice=inv_match)
+                    )
+                    continue
+                # Leftover: route to a non-invoiced member.
+                routed = _route_mixed_leftover(
+                    t, noninv_members, group, implicit_catchall, config
+                )
+                if routed is not None:
+                    items.append(routed)
+                else:
+                    alerts.append(
+                        Alert(
+                            kind=AlertKind.EXPENSE_MISSING_INVOICE,
+                            message=(
+                                f"mixed split-group leftover for "
+                                f"{', '.join(m.name for m in noninv_members)!r} "
+                                f"has no resolvable destination"
+                            ),
+                            payload={
+                                "date": t.date.isoformat(),
+                                "description": t.description,
+                                "amount": str(t.amount),
+                                "group": [m.name for m in group.members],
+                                "non_invoiced_members": [m.name for m in noninv_members],
+                            },
+                        )
+                    )
+                    unmatched.append(t)
+            continue
+
+        mixed_buckets: dict[str, tuple[Period, list[Transaction]]] = {}
+        for t in txns:
+            p = period_for(t.date, group.recurrence)
+            mixed_buckets.setdefault(p.label, (p, []))[1].append(t)
+
+        for _label, (period, bucket) in mixed_buckets.items():
+            active = [
+                m for m in group.members
+                if m.start_date is None or m.start_date <= period.end
+            ]
+            active_invoiced = [m for m in active if m.invoice_folder is not None]
+            active_invoiced_names = frozenset(m.name for m in active_invoiced)
+            active_noninv = [m for m in active if m.invoice_folder is None]
+
+            matched: list[Item] = []
+            matched_member_names: set[str] = set()
+            remaining: list[Transaction] = []
+            for t in bucket:
+                pre = pre_assigned.get(id(t))
+                if pre is not None and pre[0] in active_invoiced_names:
+                    # The pre-loop earlier already added this invoice to
+                    # `consumed`; we just realize the pre-assignment here.
+                    pre_cat, pre_inv = pre
+                    matched.append(
+                        Item(transaction=t, category=pre_cat, invoice=pre_inv)
+                    )
+                    matched_member_names.add(pre_cat)
+                    continue
+                inv_cat, inv_match = _try_invoice_match(
+                    t,
+                    inv_lists,
+                    config,
+                    alerts,
+                    consumed,
+                    restrict_to=active_invoiced_names,
+                )
+                if inv_match is not None and inv_cat is not None:
+                    consumed.add((inv_cat, inv_match.content_hash))
+                    matched.append(
+                        Item(transaction=t, category=inv_cat, invoice=inv_match)
+                    )
+                    matched_member_names.add(inv_cat)
+                    continue
+                remaining.append(t)
+
+            # Missing-invoice alerts for active invoiced members without a
+            # match in this period. Emit before the bucket check so the user
+            # always sees the per-member signal alongside any bucket-level
+            # alert. Payload is per-(member, period) — there is no single
+            # transaction to attach, so it omits date/description/amount that
+            # the per-transaction EXPENSE_MISSING_INVOICE alerts carry.
+            for m in active_invoiced:
+                if m.name in matched_member_names:
+                    continue
+                alerts.append(
+                    Alert(
+                        kind=AlertKind.EXPENSE_MISSING_INVOICE,
+                        message=(
+                            f"expense in '{m.name}' has no matched invoice "
+                            f"in {period.label}"
+                        ),
+                        payload={
+                            "category": m.name,
+                            "period": period.label,
+                        },
+                    )
+                )
+
+            # Stronger per-side check: matched must cover all active invoiced
+            # members AND remaining must equal the number of non-invoiced
+            # active members. The weaker `len(bucket) == len(active)` check
+            # would silently route extra leftovers to a single catch-all in
+            # cases where an invoiced member's invoice was actually missing.
+            if (
+                len(matched) != len(active_invoiced)
+                or len(remaining) != len(active_noninv)
+            ):
+                # Invoice matches are deterministic (amount equality + window),
+                # so keep them. Only the ambiguous leftovers stay unmatched.
+                alerts.append(
+                    Alert(
+                        kind=AlertKind.AMBIGUOUS_SPLIT_BUCKET,
+                        message=(
+                            f"mixed split-group bucket mismatch in "
+                            f"{period.label}: matched {len(matched)}/"
+                            f"{len(active_invoiced)} invoiced, "
+                            f"leftover {len(remaining)}/{len(active_noninv)} "
+                            f"non-invoiced"
+                        ),
+                        payload={
+                            "group": [m.name for m in group.members],
+                            "period": period.label,
+                            "matched": len(matched),
+                            "expected_matched": len(active_invoiced),
+                            "leftovers": len(remaining),
+                            "expected_leftovers": len(active_noninv),
+                            "transactions": [
+                                {
+                                    "date": t.date.isoformat(),
+                                    "description": t.description,
+                                    "amount": str(t.amount),
+                                }
+                                for t in remaining
+                            ],
+                        },
+                    )
+                )
+                items.extend(matched)
+                unmatched.extend(remaining)
+                continue
+
+            items.extend(matched)
+
+            # This branch only runs for mixed groups with a real recurrence
+            # AND exactly one non-invoiced member (the 2+ noninv and rec=none
+            # cases take the per-transaction path above). When the lone
+            # non-invoiced member is not yet active in this period the bucket
+            # check above (len(remaining) == 0) has already passed.
+            if not active_noninv:
+                continue
+            for t in remaining:
+                routed = _route_mixed_leftover(
+                    t, active_noninv, group, implicit_catchall, config
+                )
+                if routed is not None:
+                    items.append(routed)
+                else:
+                    # The single-noninv case routes unconditionally when the
+                    # member is active, so this branch is only reached if the
+                    # member's start_date excluded the txn. Treat as unmatched.
+                    unmatched.append(t)
+
     for cat_name, invs in inv_lists.items():
         for inv in invs:
             if (cat_name, inv.content_hash) not in consumed:
@@ -276,11 +481,158 @@ def match(
                     )
                 )
 
+    # Amount-specific manual_mapping entries that didn't actually route any
+    # transaction are flagged so users can spot typos, stale entries, or
+    # mappings whose intended txn never appeared. "Routed" means the entry
+    # produced an Item via the manual_mapping override path (Item.from_manual_mapping
+    # is True). Entries whose (description, amount) coincides with an
+    # invoice-matched transaction are still flagged — the invoice match
+    # would have routed it without the mapping, so the mapping was not
+    # load-bearing. No-amount fallback entries are skipped (their purpose
+    # is to absorb whatever's left; not firing is normal).
+    routed_via_mapping: set[tuple[str, Decimal, str]] = {
+        (it.transaction.description, it.transaction.amount, it.category)
+        for it in items
+        if it.from_manual_mapping
+    }
+    for desc, mm_entries in config.manual_mappings.items():
+        for mm_entry in mm_entries:
+            if mm_entry.amount is None:
+                continue
+            if (desc, mm_entry.amount, mm_entry.category) in routed_via_mapping:
+                continue
+            alerts.append(
+                Alert(
+                    kind=AlertKind.UNUSED_MANUAL_MAPPING,
+                    message=(
+                        f"manual_mapping '{desc}' amount={mm_entry.amount} → "
+                        f"'{mm_entry.category}' is unused (no transaction was "
+                        f"routed via this entry)"
+                    ),
+                    payload={
+                        "description": desc,
+                        "amount": str(mm_entry.amount),
+                        "category": mm_entry.category,
+                    },
+                )
+            )
+
     return MatchResult(
         items=tuple(items),
         alerts=tuple(alerts),
         unmatched_transactions=tuple(unmatched),
     )
+
+
+def _implicit_catchall_for(
+    group: SplitGroup,
+    noninv_members: list[Category],
+    config: Config,
+) -> Category | None:
+    """Identify the implicit catch-all non-invoiced member of a mixed group.
+
+    Returns the single non-invoiced member that is NOT referenced by any
+    manual_mapping entry whose key matches one of the group's patterns. If
+    zero or two-or-more such members exist, returns None (no implicit
+    catch-all; routing requires explicit manual_mapping resolution).
+
+    Only applies to 2+ noninv groups — for 1-noninv groups the single
+    member is itself the catch-all via the existing one-noninv branch.
+    """
+    if len(noninv_members) < 2:
+        return None
+    referenced: set[str] = set()
+    noninv_names = {m.name for m in noninv_members}
+    patterns_upper = {p.upper() for p in group.patterns}
+    for key, entries in config.manual_mappings.items():
+        # Manual_mapping keys are full descriptions; consider a key relevant to
+        # this group if any of the group's patterns is a substring of the key
+        # (matches how _split_group_for routes a transaction to the group).
+        key_upper = key.upper()
+        if not any(pat in key_upper for pat in patterns_upper):
+            continue
+        for entry in entries:
+            if entry.category in noninv_names:
+                referenced.add(entry.category)
+    unreferenced = [m for m in noninv_members if m.name not in referenced]
+    if len(unreferenced) == 1:
+        return unreferenced[0]
+    return None
+
+
+def _route_mixed_leftover(
+    txn: Transaction,
+    noninv_members: list[Category],
+    group: SplitGroup,
+    implicit_catchall: Category | None,
+    config: Config,
+) -> Item | None:
+    """Route a leftover (no invoice matched) in a mixed split group.
+
+    Returns the resulting Item or None if the leftover couldn't be routed
+    (caller should alert and append to ``unmatched``).
+
+    - One non-invoiced member: route to it unconditionally, subject to its
+      ``start_date``. Carries manual_mapping display overrides when the
+      mapping points at the same category.
+    - Two or more non-invoiced members: the leftover must be resolved via
+      ``resolve_manual_mapping`` to one of the group's non-invoiced members
+      (and that member must be active for this transaction). If no entry
+      resolves but the group has an ``implicit_catchall`` (exactly one
+      non-invoiced member is not referenced by any manual_mapping entry
+      keyed by the group's patterns), route to it. Otherwise return None.
+    """
+    # Manual_mapping is the authoritative routing override: if it points to
+    # any member of this group (invoiced or non-invoiced), trust the user
+    # and route there. For an invoiced target this produces an Item without
+    # invoice (the user has authored the routing and is saying "no invoice
+    # expected here"); the from_manual_mapping flag exempts it from the
+    # runner's "items in invoiced categories must have invoices" filter.
+    mapping = resolve_manual_mapping(txn.description, txn.amount, config)
+    if mapping is not None:
+        mapped_target: Category | None = next(
+            (m for m in group.members if m.name == mapping.category),
+            None,
+        )
+        if mapped_target is not None and (
+            mapped_target.start_date is None
+            or txn.date >= mapped_target.start_date
+        ):
+            return Item(
+                transaction=txn,
+                category=mapped_target.name,
+                invoice=None,
+                display_recurrence=mapping.recurrence,
+                display_period_contains_payment=mapping.period_contains_payment,
+                from_manual_mapping=True,
+            )
+        # Mapping points outside the group (or to a not-yet-active member):
+        # fall through to default routing.
+
+    if len(noninv_members) == 1:
+        single_target = noninv_members[0]
+        if single_target.start_date is not None and txn.date < single_target.start_date:
+            return None
+        return Item(
+            transaction=txn,
+            category=single_target.name,
+            invoice=None,
+        )
+
+    # 2+ non-invoiced members and no explicit mapping: fall back to the
+    # implicit catch-all if the group has one (exactly one non-invoiced
+    # member not referenced by any manual_mapping entry keyed by the group's
+    # patterns).
+    if implicit_catchall is not None and (
+        implicit_catchall.start_date is None
+        or txn.date >= implicit_catchall.start_date
+    ):
+        return Item(
+            transaction=txn,
+            category=implicit_catchall.name,
+            invoice=None,
+        )
+    return None
 
 
 def _split_group_for(
@@ -324,7 +676,7 @@ def _resolve_chronological_buckets(
         cat_txns: list[Transaction] = []
         for txn in transactions:
             desc_upper = txn.description.upper()
-            mapping = config.manual_mappings.get(txn.description)
+            mapping = resolve_manual_mapping(txn.description, txn.amount, config)
             pattern_hit = any(p.upper() in desc_upper for p in cat.patterns)
             mapped_here = mapping is not None and mapping.category == cat_name
             if pattern_hit or mapped_here:
@@ -427,7 +779,7 @@ def _try_invoice_match(
 ) -> tuple[str | None, Invoice | None]:
     candidates: list[tuple[str, Invoice]] = []
     desc_upper = txn.description.upper()
-    mapping = config.manual_mappings.get(txn.description)
+    mapping = resolve_manual_mapping(txn.description, txn.amount, config)
     for cat_name, invs in inv_lists.items():
         if restrict_to is not None and cat_name not in restrict_to:
             continue
@@ -454,7 +806,15 @@ def _try_invoice_match(
             # this guard a single invoice could be paired with multiple txns.
             if (cat_name, inv.content_hash) in consumed:
                 continue
-            if inv.invoice_date is not None:
+            if mapped_here:
+                # User explicitly pinned this (description, amount) to this
+                # category via manual_mapping. Trust the override and bypass
+                # the window check — they've taken responsibility for the
+                # match, and a window misalignment is exactly why someone
+                # would write a manual mapping. Amount equality and the
+                # not-consumed check above still apply.
+                candidates.append((cat_name, inv))
+            elif inv.invoice_date is not None:
                 delta = (txn.date - inv.invoice_date).days
                 if 0 <= delta <= window:
                     candidates.append((cat_name, inv))

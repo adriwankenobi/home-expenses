@@ -47,6 +47,12 @@ class Item:
     invoice: Invoice | None
     display_recurrence: str | None = None
     display_period_contains_payment: bool | None = None
+    # True when the routing decision came from a manual_mapping that pinned
+    # this (description, amount) to this category. Such items are shown in
+    # the report even when the category has an invoice_folder but the item
+    # has no invoice attached — the user has authored the routing and taken
+    # responsibility for the "no invoice expected here" semantics.
+    from_manual_mapping: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,7 @@ class AlertKind(StrEnum):
     AMBIGUOUS_PATTERN_MATCH = "ambiguous_pattern_match"
     AMBIGUOUS_SPLIT_BUCKET = "ambiguous_split_bucket"
     SPLIT_AMOUNT_TIE = "split_amount_tie"
+    UNUSED_MANUAL_MAPPING = "unused_manual_mapping"
 
 
 @dataclass(frozen=True)

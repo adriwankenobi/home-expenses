@@ -102,8 +102,14 @@ def _has_expected_invoice(item: Item, config: Config) -> bool:
     EXPENSE_MISSING_INVOICE for on-or-after start_date, but the user
     doesn't want pre-start_date pattern matches cluttering the report
     either.)
+
+    Items routed via a manual_mapping (``from_manual_mapping=True``) are
+    always shown: the user has explicitly authored the routing and is
+    saying "this txn belongs here, no invoice expected."
     """
     if item.invoice is not None:
+        return True
+    if item.from_manual_mapping:
         return True
     cat = config.categories.get(item.category)
     return cat is None or cat.invoice_folder is None
