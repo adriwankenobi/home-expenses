@@ -673,7 +673,7 @@
     //   - thick bar from period_start to period_end (consumption window)
     //   - thin solid line from period_end to invoice_date
     //   - thin dotted line from invoice_date to payment_date
-    //   - open diamond at invoice_date
+    //   - open diamond at invoice_date (only when a real invoice exists)
     //   - filled dot at payment_date (the ONLY hoverable element)
     // Every element of an item uses the item's category color. Traces are
     // grouped by category name (5 traces per category) because Plotly applies
@@ -729,6 +729,11 @@
       if (it.invoice_date) {
         cd.waitLineX.push(it.invoice_date, it.date, null);
         cd.waitLineY.push(y, y, null);
+      }
+      // Diamond marks a real invoice date only. enrichItems folds the
+      // synthetic period_end into it.invoice_date for non-invoiced items;
+      // invoice_path is the canonical signal that a real invoice exists.
+      if (it.invoice_path && it.invoice_date) {
         cd.invX.push(it.invoice_date);
         cd.invY.push(y);
       }
