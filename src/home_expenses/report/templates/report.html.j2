@@ -33,6 +33,20 @@
   .cat-card .sub { display: flex; flex-direction: column; }
   .cat-card .sub-value { font-size: 16px; font-weight: bold; color: #ddd; }
   .cat-card .sub-label { font-size: 10px; color: #aaa; text-transform: uppercase; margin-top: 2px; }
+  /* Pill-row legend above the items table. One pill per category; click
+     toggles the category in the items table only (chart legends stay
+     independent). */
+  .items-legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+  .legend-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; background: #2a2a2a; border: 1px solid #3a3a3a;
+    border-radius: 999px; color: #ddd; font-size: 12px;
+    cursor: pointer; user-select: none;
+  }
+  .legend-pill:hover { background: #333; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .legend-pill--off { opacity: 0.35; }
+  .legend-pill--off .legend-dot { background: #555 !important; }
   .item-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .item-table th, .item-table td { padding: 6px 10px; text-align: center; border-bottom: 1px solid #333; }
   /* Description (6) and Category (8) stay left-aligned for readability. */
@@ -115,6 +129,7 @@
 
 <div class="section">
   <h2>Items</h2>
+  <div id="items-legend" class="items-legend"></div>
   <table class="item-table" id="items">
     <thead>
       <tr>
@@ -147,6 +162,10 @@
 (function () {
   const data = JSON.parse(document.getElementById('model-data').textContent);
   let activeYear = 'all';
+  // Categories the user has hidden via the items-list legend. Scoped to the
+  // items table only — Plotly chart legends keep their own state. Set
+  // persists across year-filter switches.
+  const hiddenCategories = new Set();
 
   function filtered() {
     if (activeYear === 'all') return data.items;
@@ -363,6 +382,7 @@
       new Set(items.map(it => it.category)).size;
     renderCategoryBreakdown(items);
     renderItemsTable(items);
+    renderItemsLegend();
     renderSpent(items);
     renderConsumed(items);
     renderDonut(items);
@@ -415,6 +435,9 @@
   function renderItemsTable(items) {
     // data.items is pre-sorted by date desc upstream; `items` (filtered)
     // preserves that order, so simple iteration produces a desc table.
+    // Apply the legend's hidden-category filter last so toggling re-renders
+    // affect this list alone.
+    items = items.filter(it => !hiddenCategories.has(it.category));
     const tbody = document.getElementById('items-body');
     tbody.innerHTML = '';
     items.forEach((it, idx) => {
@@ -423,16 +446,27 @@
       tr.dataset.itemId = idx;
       const catColor = colorMap[it.category];
       const info = displayInfoFor(it);
-      let periodStartCell = '';
-      let periodEndCell = '';
-      let periodLengthCell = '';
+      // Items without any period info (no invoice + recurrence "none" or
+      // unknown — typically one-time payments routed via manual_mapping)
+      // get long-dash placeholders in every period column, matching the
+      // "real invoice without an invoice_date" presentation.
+      let periodStartCell = '—';
+      let periodEndCell = '—';
+      let periodLengthCell = '—';
       let invoiceDateCell = '—';
       if (info) {
         const d = daysInclusive(info.period_start, info.period_end);
         periodStartCell = info.period_start;
         periodEndCell = info.period_end;
         periodLengthCell = d + ' day' + (d === 1 ? '' : 's');
-        invoiceDateCell = info.invoice_date ? info.invoice_date : '—';
+        // Items without a real invoice show "—" in the Invoice date column,
+        // matching the "real invoice without an invoice_date" case (e.g.
+        // IBI). The check is on it.invoice_path because enrichItems folds
+        // the synthetic invoice_date (= period_end, used by the timeline
+        // for line positioning) into it.invoice_date — so by the time we
+        // reach this branch, info.invoice_date alone can't tell us whether
+        // a real invoice exists. invoice_path is the canonical signal.
+        invoiceDateCell = (it.invoice_path && info.invoice_date) ? info.invoice_date : '—';
       }
       tr.innerHTML =
         '<td>' + periodStartCell + '</td>' +
@@ -450,6 +484,81 @@
       tr.style.color = catColor;
       tr.firstElementChild.style.borderLeft = '3px solid ' + catColor;
       tbody.appendChild(tr);
+    });
+  }
+
+  // Returns the list of category names that should be shown as pills, in
+  // config order. Falls back to sorted unique categories from data.items
+  // when categories_by_name is empty (matches categoriesPresent's fallback).
+  function legendCategories() {
+    const configOrder = Object.keys(data.categories_by_name || {});
+    if (configOrder.length > 0) return configOrder;
+    return Array.from(new Set(data.items.map(it => it.category))).sort();
+  }
+
+  // Build the items-list legend. One pill per category; hidden categories
+  // get the legend-pill--off class. Click and dblclick are wired with a
+  // debounce so dblclick doesn't also trigger the click toggle.
+  function renderItemsLegend() {
+    const container = document.getElementById('items-legend');
+    container.innerHTML = '';
+    legendCategories().forEach(cat => {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'legend-pill';
+      if (hiddenCategories.has(cat)) pill.classList.add('legend-pill--off');
+      pill.dataset.cat = cat;
+      const dot = document.createElement('span');
+      dot.className = 'legend-dot';
+      dot.style.background = colorMap[cat] || '#888';
+      const label = document.createElement('span');
+      label.className = 'legend-label';
+      label.textContent = cat;
+      pill.appendChild(dot);
+      pill.appendChild(label);
+      attachLegendHandlers(pill, cat);
+      container.appendChild(pill);
+    });
+  }
+
+  // Click toggles one category; dblclick isolates that category (or
+  // restores all if the same category is already isolated). The setTimeout
+  // on click is the standard click/dblclick debounce so double-click does
+  // NOT also fire the single-click toggle. The timer is per-pill so a click
+  // on pill A followed by a click on pill B within 200ms is not dropped.
+  function attachLegendHandlers(pill, cat) {
+    let clickTimer = null;
+    pill.addEventListener('click', () => {
+      if (clickTimer !== null) return; // already scheduled for this pill
+      clickTimer = setTimeout(() => {
+        clickTimer = null;
+        if (hiddenCategories.has(cat)) {
+          hiddenCategories.delete(cat);
+        } else {
+          hiddenCategories.add(cat);
+        }
+        renderItemsTable(enrichItems(filtered()));
+        renderItemsLegend();
+      }, 200);
+    });
+    pill.addEventListener('dblclick', () => {
+      if (clickTimer !== null) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+      }
+      const allCats = legendCategories();
+      const others = allCats.filter(c => c !== cat);
+      const alreadyIsolated =
+        !hiddenCategories.has(cat) &&
+        others.every(c => hiddenCategories.has(c));
+      if (alreadyIsolated) {
+        hiddenCategories.clear();
+      } else {
+        hiddenCategories.clear();
+        others.forEach(c => hiddenCategories.add(c));
+      }
+      renderItemsTable(enrichItems(filtered()));
+      renderItemsLegend();
     });
   }
 
@@ -518,7 +627,16 @@
     const cutoff = data.generated_at.slice(0, 7);
     const yearPrefix = activeYear === 'all' ? null : (activeYear + '-');
     renderMonthlyChart('chart-consumed', items, it => {
-      if (!it.period_start || !it.period_end) return {};
+      // Items without a period (one-time payments routed via
+      // manual_mapping, no synthetic period available) consume in the
+      // month of the payment itself — same attribution rule as the
+      // spent chart for these items.
+      if (!it.period_start || !it.period_end) {
+        const m = it.date.slice(0, 7);
+        if (m > cutoff) return {};
+        if (yearPrefix !== null && !m.startsWith(yearPrefix)) return {};
+        return { [m]: parseFloat(it.amount) };
+      }
       const split = splitPeriodAcrossMonths(it.period_start, it.period_end);
       const amount = parseFloat(it.amount);
       const out = {};

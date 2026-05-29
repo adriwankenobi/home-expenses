@@ -248,3 +248,32 @@ def test_items_table_shows_long_dash_when_no_invoice(tmp_path: Path) -> None:
     html = out.read_text(encoding="utf-8")
     assert "&mdash;" in html or "—" in html
     assert '"invoice_path":null' in html or '"invoice_path": null' in html
+
+
+def test_items_section_has_legend_container(tmp_path: Path) -> None:
+    # The items table is preceded by an empty <div id="items-legend"> that
+    # the report script populates with one clickable pill per category.
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="ANY EXPENSE",
+        amount=Decimal("10.00"),
+    )
+    items = [make_item(transaction=txn, category="electricity", invoice=None)]
+    cats = {
+        "electricity": ReportCategory(
+            name="electricity",
+            recurrence="monthly",
+            period_contains_payment=False,
+        ),
+    }
+    model = build_report_model(
+        items=items,
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name=cats,
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    html = out.read_text(encoding="utf-8")
+    assert '<div id="items-legend"' in html
