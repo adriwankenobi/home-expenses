@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import json
 from datetime import date
 from decimal import Decimal
@@ -14,12 +15,67 @@ from home_expenses.models import Item, ReportModel
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
+# English month names, indexed 1..12. Hardcoded rather than using
+# ``date.strftime('%B')`` because the latter is locale-dependent (the user's
+# system locale is Spanish) and the report UI is English throughout.
+_MONTH_NAMES = (
+    "",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
+def format_period(start: date | None, end: date | None) -> str:
+    """Format an invoice period span for the merged "Period" column.
+
+    Strict calendar alignment:
+    - Full calendar year (01/01 -> 31/12, same year) -> ``"2025"``.
+    - Full calendar month (1st -> last day, same month) -> ``"January 2025"``.
+    - Single day (start == end) -> ``"13/03/2025"``.
+    - Anything else -> ``"13/03/2025 to 23/05/2025"`` (DD/MM/YYYY).
+    - Missing either bound -> ``"—"``.
+
+    The JS ``formatPeriod`` in the report template mirrors this logic; keep
+    the two in sync.
+    """
+    if start is None or end is None:
+        return "—"
+    if (
+        start.month == 1
+        and start.day == 1
+        and end.month == 12
+        and end.day == 31
+        and start.year == end.year
+    ):
+        return str(start.year)
+    if (
+        start.year == end.year
+        and start.month == end.month
+        and start.day == 1
+        and end.day == calendar.monthrange(end.year, end.month)[1]
+    ):
+        return f"{_MONTH_NAMES[start.month]} {start.year}"
+    if start == end:
+        return start.strftime("%d/%m/%Y")
+    return f"{start.strftime('%d/%m/%Y')} to {end.strftime('%d/%m/%Y')}"
+
 
 def render_report(model: ReportModel, output_path: Path) -> None:
     env = Environment(
         loader=FileSystemLoader(_TEMPLATE_DIR),
         autoescape=select_autoescape(["html", "j2"]),
     )
+    env.filters["format_period"] = format_period
     template = env.get_template("report.html.j2")
     sorted_items = sorted(model.items, key=_item_sort_key, reverse=True)
     html = template.render(

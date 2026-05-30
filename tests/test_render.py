@@ -85,8 +85,9 @@ def test_dates_display_as_ddmmyyyy_but_json_stays_iso(tmp_path: Path) -> None:
     # Server-rendered items table: DD/MM/YYYY.
     assert "18/05/2026" in html  # payment date
     assert "10/05/2026" in html  # invoice date
-    assert "01/04/2026" in html  # period start
-    assert "30/04/2026" in html  # period end
+    # The period (01/04 -> 30/04) is a full calendar month, so the merged
+    # Period column collapses it to the month name rather than two dates.
+    assert "April 2026" in html
     # Header timestamp date portion: DD/MM/YYYY (not 2026-05-19).
     assert "19/05/2026" in html
 
@@ -125,8 +126,10 @@ def test_js_has_ddmmyyyy_formatter_and_wires_it(tmp_path: Path) -> None:
     assert "function formatDate" in html
     # JS-rebuilt items table uses the formatter for the payment-date cell.
     assert "formatDate(it.date)" in html
-    # Timeline tooltip routes its dates through the formatter too.
-    assert "formatDate(it.period_start)" in html
+    # The merged Period column + timeline tooltip route through formatPeriod,
+    # which itself falls back to formatDate for explicit ranges.
+    assert "function formatPeriod" in html
+    assert "formatPeriod(it.period_start, it.period_end)" in html
     # Plotly date axis ticks render DD/MM/YYYY.
     assert "tickformat: '%d/%m/%Y'" in html
 
