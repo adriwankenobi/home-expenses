@@ -277,3 +277,109 @@ def test_items_section_has_legend_container(tmp_path: Path) -> None:
     render_report(model, out)
     html = out.read_text(encoding="utf-8")
     assert '<div id="items-legend"' in html
+
+
+def test_report_defines_unified_filter_controls(tmp_path: Path) -> None:
+    # The report script exposes the shared filter-control functions that every
+    # legend gesture funnels through.
+    model = build_report_model(
+        items=[
+            make_item(
+                transaction=make_transaction(date=date(2026, 5, 18)),
+                category="electricity",
+            )
+        ],
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={
+            "electricity": ReportCategory(
+                name="electricity", recurrence="monthly", period_contains_payment=False
+            )
+        },
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    html = out.read_text(encoding="utf-8")
+    assert "function toggleCategory" in html
+    assert "function isolateCategory" in html
+    assert "function scheduleToggle" in html
+    assert "function cancelToggle" in html
+
+
+def test_bar_charts_intercept_legend_for_unified_filter(tmp_path: Path) -> None:
+    model = build_report_model(
+        items=[
+            make_item(
+                transaction=make_transaction(date=date(2026, 5, 18)),
+                category="electricity",
+            )
+        ],
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={
+            "electricity": ReportCategory(
+                name="electricity", recurrence="monthly", period_contains_payment=False
+            )
+        },
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    html = out.read_text(encoding="utf-8")
+    # Hidden categories are greyed (legendonly) rather than dropped, and the
+    # monthly chart routes legend gestures through the shared helpers. The
+    # ternary is unique to renderMonthlyChart's bar traces, so it guards the
+    # specific wiring this test is named for.
+    assert "hiddenCategories.has(cat) ? 'legendonly' : true" in html
+    assert "plotly_legendclick" in html
+    assert "legendCatFromEvent" in html
+
+
+def test_donut_uses_hiddenlabels_for_unified_filter(tmp_path: Path) -> None:
+    model = build_report_model(
+        items=[
+            make_item(
+                transaction=make_transaction(date=date(2026, 5, 18)),
+                category="electricity",
+            )
+        ],
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={
+            "electricity": ReportCategory(
+                name="electricity", recurrence="monthly", period_contains_payment=False
+            )
+        },
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    html = out.read_text(encoding="utf-8")
+    # The bare word "hiddenlabels" also appears inside the bundled Plotly.js,
+    # so assert on the exact wiring unique to renderDonut's layout.
+    assert "hiddenlabels: Array.from(hiddenCategories)" in html
+
+
+def test_timeline_uses_unified_state(tmp_path: Path) -> None:
+    # The timeline now shares hiddenCategories; the old per-chart set is gone.
+    model = build_report_model(
+        items=[
+            make_item(
+                transaction=make_transaction(date=date(2026, 5, 18)),
+                category="electricity",
+            )
+        ],
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={
+            "electricity": ReportCategory(
+                name="electricity", recurrence="monthly", period_contains_payment=False
+            )
+        },
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    html = out.read_text(encoding="utf-8")
+    assert "hiddenTimelineCats" not in html

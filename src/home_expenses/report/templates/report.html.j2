@@ -162,15 +162,62 @@
 (function () {
   const data = JSON.parse(document.getElementById('model-data').textContent);
   let activeYear = 'all';
-  // Categories the user has hidden via the items-list legend. Scoped to the
-  // items table only — Plotly chart legends keep their own state. Set
-  // persists across year-filter switches.
+  // Single source of truth for which categories are hidden, shared by every
+  // chart and the items list. Persists across year-filter switches. All
+  // legend gestures funnel through toggleCategory / isolateCategory below.
   const hiddenCategories = new Set();
-  // Categories the user has hidden via the timeline chart's own legend.
-  // Scoped to the timeline only; items in these categories are removed from
-  // the chart layout entirely (rows collapse, height shrinks) rather than
-  // leaving Plotly's default empty-row gaps. Persists across year switches.
-  const hiddenTimelineCats = new Set();
+  // ---- unified category filtering ----
+  // A single click toggles one category; a double-click isolates it (show
+  // only that one; double-click again to restore all). Both gestures mutate
+  // hiddenCategories and call render(), which re-runs every component so all
+  // five views and all legends stay in lock-step.
+  const DBLCLICK_DELAY = 300;
+  // Per-category pending single-click timers, keyed by category so a click on
+  // A followed by a click on B within the delay window doesn't drop A's
+  // toggle. A double-click cancels its category's pending toggle and isolates
+  // instead. The delay also lets Plotly's own dblclick detection survive: a
+  // synchronous re-render from inside legendclick would otherwise wipe the
+  // chart's mouseDownTime and break the second-click match.
+  const pendingToggles = {};
+  function scheduleToggle(cat) {
+    // Same-category guard: while a toggle for this category is pending, ignore
+    // further clicks on it (the second click of a dblclick, or a rapid repeat)
+    // so the dblclick handler can cancel-and-isolate instead. Mirrors the
+    // existing items-pill behaviour.
+    if (pendingToggles[cat]) return;
+    pendingToggles[cat] = setTimeout(() => {
+      delete pendingToggles[cat];
+      toggleCategory(cat);
+    }, DBLCLICK_DELAY);
+  }
+  function cancelToggle(cat) {
+    if (pendingToggles[cat]) {
+      clearTimeout(pendingToggles[cat]);
+      delete pendingToggles[cat];
+    }
+  }
+  // Extract the category name from a Plotly legend event. Pie/donut legends
+  // identify the entry by slice label (evt.label); bar/scatter legends
+  // identify it by the trace name at evt.curveNumber.
+  function legendCatFromEvent(evt) {
+    return evt.label !== undefined ? evt.label : evt.data[evt.curveNumber].name;
+  }
+  function toggleCategory(cat) {
+    if (hiddenCategories.has(cat)) hiddenCategories.delete(cat);
+    else hiddenCategories.add(cat);
+    render();
+  }
+  function isolateCategory(cat) {
+    // Show only `cat`; a second isolate on an already-isolated category
+    // restores all. "All others" is taken from the full configured legend so
+    // categories absent from the current year still get hidden harmlessly.
+    const others = legendCategories().filter(c => c !== cat);
+    const alreadyIsolated =
+      !hiddenCategories.has(cat) && others.every(c => hiddenCategories.has(c));
+    hiddenCategories.clear();
+    if (!alreadyIsolated) others.forEach(c => hiddenCategories.add(c));
+    render();
+  }
 
   function filtered() {
     if (activeYear === 'all') return data.items;
@@ -526,44 +573,15 @@
     });
   }
 
-  // Click toggles one category; dblclick isolates that category (or
-  // restores all if the same category is already isolated). The setTimeout
-  // on click is the standard click/dblclick debounce so double-click does
-  // NOT also fire the single-click toggle. The timer is per-pill so a click
-  // on pill A followed by a click on pill B within 200ms is not dropped.
+  // Click toggles one category; dblclick isolates it. Both gestures route
+  // through the shared control core so every chart and legend updates in sync
+  // (scheduleToggle's per-category debounce keeps dblclick from also firing
+  // the single-click toggle).
   function attachLegendHandlers(pill, cat) {
-    let clickTimer = null;
-    pill.addEventListener('click', () => {
-      if (clickTimer !== null) return; // already scheduled for this pill
-      clickTimer = setTimeout(() => {
-        clickTimer = null;
-        if (hiddenCategories.has(cat)) {
-          hiddenCategories.delete(cat);
-        } else {
-          hiddenCategories.add(cat);
-        }
-        renderItemsTable(enrichItems(filtered()));
-        renderItemsLegend();
-      }, 200);
-    });
+    pill.addEventListener('click', () => scheduleToggle(cat));
     pill.addEventListener('dblclick', () => {
-      if (clickTimer !== null) {
-        clearTimeout(clickTimer);
-        clickTimer = null;
-      }
-      const allCats = legendCategories();
-      const others = allCats.filter(c => c !== cat);
-      const alreadyIsolated =
-        !hiddenCategories.has(cat) &&
-        others.every(c => hiddenCategories.has(c));
-      if (alreadyIsolated) {
-        hiddenCategories.clear();
-      } else {
-        hiddenCategories.clear();
-        others.forEach(c => hiddenCategories.add(c));
-      }
-      renderItemsTable(enrichItems(filtered()));
-      renderItemsLegend();
+      cancelToggle(cat);
+      isolateCategory(cat);
     });
   }
 
@@ -597,6 +615,8 @@
       name: cat,
       type: 'bar',
       marker: { color: colorMap[cat] },
+      // Hidden categories keep their (greyed) legend entry but draw no bars.
+      visible: hiddenCategories.has(cat) ? 'legendonly' : true,
       customdata: months.map(m => (cellIndices[cat] && cellIndices[cat][m]) || []),
       hovertemplate:
         '<b>' + cat + '</b><br>%{x|%b %Y}<br>' + fmtAmountTemplate('%{y:.2f}') + '<extra></extra>',
@@ -607,6 +627,18 @@
     const div = document.getElementById(divId);
     div.on('plotly_click', evt => {
       highlightItems(evt.points[0].customdata || []);
+    });
+    // Intercept the legend so it drives the shared filter instead of Plotly's
+    // own per-chart toggle. Returning false suppresses the default toggle.
+    div.on('plotly_legendclick', evt => {
+      scheduleToggle(legendCatFromEvent(evt));
+      return false;
+    });
+    div.on('plotly_legenddoubleclick', evt => {
+      const cat = legendCatFromEvent(evt);
+      cancelToggle(cat);
+      isolateCategory(cat);
+      return false;
     });
     attachPointerCursor(div);
   }
@@ -670,7 +702,25 @@
       sort: false,
       hovertemplate:
         '<b>%{label}</b><br>' + fmtAmountTemplate('%{value:.2f}') + ' (%{percent})<extra></extra>',
-    }], { paper_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 } }, { displayModeBar: false });
+    }], {
+      paper_bgcolor: '#1f1f1f', font: { color: '#ddd' }, margin: { t: 20 },
+      // Pie slices have no per-slice `visible`; hiddenlabels is Plotly's
+      // native mechanism. Hidden slices drop out (the remaining slices
+      // necessarily reflow to fill 360°) while their legend entry stays
+      // greyed and clickable.
+      hiddenlabels: Array.from(hiddenCategories),
+    }, { displayModeBar: false });
+    const div = document.getElementById('chart-donut');
+    div.on('plotly_legendclick', evt => {
+      scheduleToggle(legendCatFromEvent(evt));
+      return false;
+    });
+    div.on('plotly_legenddoubleclick', evt => {
+      const cat = legendCatFromEvent(evt);
+      cancelToggle(cat);
+      isolateCategory(cat);
+      return false;
+    });
   }
 
   function renderTimeline(items) {
@@ -692,7 +742,7 @@
     const visibleItems = [];
     const origIdxByVisIdx = [];
     items.forEach((it, i) => {
-      if (hiddenTimelineCats.has(it.category)) return;
+      if (hiddenCategories.has(it.category)) return;
       origIdxByVisIdx.push(i);
       visibleItems.push(it);
     });
@@ -790,7 +840,7 @@
                   || (items[0] && items[0].date)
                   || '2000-01-01';
     cats.forEach(cat => {
-      if (hiddenTimelineCats.has(cat) && catData[cat].payX.length === 0) {
+      if (hiddenCategories.has(cat) && catData[cat].payX.length === 0) {
         catData[cat].payX.push(seedX);
         catData[cat].payY.push(0);
         catData[cat].payText.push('');
@@ -803,7 +853,7 @@
       const c = colorMap[cat];
       // Hidden cats: 'legendonly' fades the legend pill while drawing
       // nothing, and the null seed above ensures the pill renders at all.
-      const vis = hiddenTimelineCats.has(cat) ? 'legendonly' : true;
+      const vis = hiddenCategories.has(cat) ? 'legendonly' : true;
       traces.push(
         { x: cd.periodLineX, y: cd.periodLineY, mode: 'lines+markers',
           type: 'scatter',
@@ -850,52 +900,20 @@
       const cd = evt.points[0].customdata;
       if (cd !== null && cd !== undefined) highlightItems([cd]);
     });
-    // Plotly's default legend toggle only flips `visible`, which leaves the
-    // row's y-slot in the layout — visible rows then sit on a tall chart
-    // with empty bands. Intercept the click, update hiddenTimelineCats, and
-    // re-render so the layout actually collapses. Returning false prevents
-    // Plotly's own visibility toggle (which would fight our state).
-    //
-    // The clicked category is read from evt.data (Plotly's authoritative
-    // trace list), not the local `traces` closure, so the lookup survives
-    // any re-render race.
-    //
-    // Plotly fires plotly_legendclick SYNCHRONOUSLY on every click — both
-    // clicks of a dblclick. Plotly's dblclick detection relies on the
-    // chart's mouseDownTime tracking; a newPlot from inside the first
-    // legendclick wipes that state, so the second click lands on a fresh
-    // chart counter and dblclick is never recognized. We defer the toggle
-    // by doubleClickDelay (300ms); if a dblclick lands in that window, the
-    // dblclick handler cancels the pending toggle and runs isolate
-    // instead. The chart survives the click sequence, so Plotly's own
-    // detection works.
-    const DBLCLICK_DELAY = 300;
-    let pendingLegendToggle = null;
+    // Drive the shared filter instead of Plotly's per-chart toggle. The
+    // shared scheduleToggle/cancelToggle pair handles the deferred-click
+    // dance (so Plotly's own dblclick detection survives the re-render) and
+    // re-renders the WHOLE report, so the timeline's row-collapse stays in
+    // sync with every other view. Returning false suppresses Plotly's own
+    // visibility toggle, which would fight our state.
     div.on('plotly_legendclick', evt => {
-      const cat = evt.data[evt.curveNumber].name;
-      clearTimeout(pendingLegendToggle);
-      pendingLegendToggle = setTimeout(() => {
-        pendingLegendToggle = null;
-        if (hiddenTimelineCats.has(cat)) hiddenTimelineCats.delete(cat);
-        else hiddenTimelineCats.add(cat);
-        renderTimeline(items);
-      }, DBLCLICK_DELAY);
+      scheduleToggle(legendCatFromEvent(evt));
       return false;
     });
     div.on('plotly_legenddoubleclick', evt => {
-      // Mirror Plotly's default dblclick: isolate the clicked category, or
-      // show all if it's already the only one visible.
-      clearTimeout(pendingLegendToggle);
-      pendingLegendToggle = null;
-      const clicked = evt.data[evt.curveNumber].name;
-      const onlyClickedVisible =
-        !hiddenTimelineCats.has(clicked) &&
-        cats.every(c => c === clicked || hiddenTimelineCats.has(c));
-      hiddenTimelineCats.clear();
-      if (!onlyClickedVisible) {
-        cats.forEach(c => { if (c !== clicked) hiddenTimelineCats.add(c); });
-      }
-      renderTimeline(items);
+      const cat = legendCatFromEvent(evt);
+      cancelToggle(cat);
+      isolateCategory(cat);
       return false;
     });
     attachPointerCursor(div);
