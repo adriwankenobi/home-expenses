@@ -49,6 +49,88 @@ def test_renders_self_contained_html(tmp_path: Path) -> None:
     assert "unclassified_expense" in html.lower() or "Unclassified" in html
 
 
+def test_dates_display_as_ddmmyyyy_but_json_stays_iso(tmp_path: Path) -> None:
+    # Every user-facing date renders DD/MM/YYYY, but the JSON data block the
+    # in-page JS consumes (for sorting, time axes, month math, year filtering)
+    # MUST stay ISO YYYY-MM-DD. This test pins both halves of that contract.
+    txn = make_transaction(
+        date=date(2026, 5, 18),
+        description="PEPE ENERGY INVOICE",
+        amount=Decimal("11.11"),
+    )
+    inv = make_invoice(
+        source_path="/Users/test/invoices/pepeenergy/f.pdf",
+        amount=Decimal("11.11"),
+        invoice_date=date(2026, 5, 10),
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+    )
+    items = [make_item(transaction=txn, category="electricity", invoice=inv)]
+    cats = {
+        "electricity": ReportCategory(
+            name="electricity", recurrence="monthly", period_contains_payment=False
+        )
+    }
+    model = build_report_model(
+        items=items,
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name=cats,
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    html = out.read_text(encoding="utf-8")
+
+    # Server-rendered items table: DD/MM/YYYY.
+    assert "18/05/2026" in html  # payment date
+    assert "10/05/2026" in html  # invoice date
+    assert "01/04/2026" in html  # period start
+    assert "30/04/2026" in html  # period end
+    # Header timestamp date portion: DD/MM/YYYY (not 2026-05-19).
+    assert "19/05/2026" in html
+
+    # JSON data block keeps ISO so JS date math / time axes keep working.
+    payload = json.loads(_serialize_model(model))
+    it = payload["items"][0]
+    assert it["date"] == "2026-05-18"
+    assert it["invoice_date"] == "2026-05-10"
+    assert it["period_start"] == "2026-04-01"
+    assert it["period_end"] == "2026-04-30"
+    assert payload["generated_at"] == "2026-05-19"
+
+
+def test_js_has_ddmmyyyy_formatter_and_wires_it(tmp_path: Path) -> None:
+    # A single JS helper converts ISO → DD/MM/YYYY at display time, and the
+    # dynamic table + timeline tooltip + Plotly date axis all route through it.
+    model = build_report_model(
+        items=[
+            make_item(
+                transaction=make_transaction(date=date(2026, 5, 18)),
+                category="electricity",
+            )
+        ],
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={
+            "electricity": ReportCategory(
+                name="electricity", recurrence="monthly", period_contains_payment=False
+            )
+        },
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    html = out.read_text(encoding="utf-8")
+    assert "function formatDate" in html
+    # JS-rebuilt items table uses the formatter for the payment-date cell.
+    assert "formatDate(it.date)" in html
+    # Timeline tooltip routes its dates through the formatter too.
+    assert "formatDate(it.period_start)" in html
+    # Plotly date axis ticks render DD/MM/YYYY.
+    assert "tickformat: '%d/%m/%Y'" in html
+
+
 def test_empty_model_still_renders(tmp_path: Path) -> None:
     model = build_report_model(
         items=[],

@@ -167,7 +167,9 @@ def test_ambiguous_invoice_match_falls_through_to_pattern() -> None:
     msg = ambig[0].message
     # Message must identify the transaction (date, description, amount) and
     # list every candidate (category + source path) so the user can resolve it.
-    assert "2026-05-18" in msg
+    # The displayed date is DD/MM/YYYY, not ISO.
+    assert "18/05/2026" in msg
+    assert "2026-05-18" not in msg
     assert "PEPE ENERGY INVOICE" in msg
     assert "11.11" in msg
     assert "/tmp/inv1.pdf" in msg
@@ -384,6 +386,10 @@ def test_chronological_zip_orphans_worst_fit_when_invoices_outnumber_txns() -> N
     orphans = [a for a in result.alerts if a.kind is AlertKind.ORPHAN_INVOICE]
     assert len(orphans) == 1
     assert orphans[0].payload["source_path"] == "/tmp/old.pdf"
+    # The displayed period in the message reads DD/MM/YYYY (default invoice
+    # period is 2026-04-01 → 2026-04-30), not ISO.
+    assert "01/04/2026→30/04/2026" in orphans[0].message
+    assert "2026-04-01" not in orphans[0].message
 
 
 def test_invoice_never_matched_to_more_than_one_transaction() -> None:

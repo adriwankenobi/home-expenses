@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Home Expenses Report · {{ model.generated_at }}</title>
+<title>Home Expenses Report · {{ model.generated_at.strftime('%d/%m/%Y') }}</title>
 <style>
   body { background: #1a1a1a; color: #ddd; font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 24px; }
   h1, h2, h3 { color: #fff; }
@@ -74,7 +74,7 @@
 <body>
 
 <div class="header">
-  <h1>Home Expenses · {{ model.generated_at }}</h1>
+  <h1>Home Expenses · {{ model.generated_at.strftime('%d/%m/%Y') }}</h1>
   <div class="year-tabs" id="year-tabs">
     <div class="year-tab active" data-year="all">All</div>
     {% for y in model.years %}
@@ -141,11 +141,11 @@
     <tbody id="items-body">
       {% for it in sorted_items %}
       <tr id="item-{{ loop.index0 }}" data-item-id="{{ loop.index0 }}">
-        <td>{% if it.invoice %}{{ it.invoice.period.start }}{% endif %}</td>
-        <td>{% if it.invoice %}{{ it.invoice.period.end }}{% endif %}</td>
+        <td>{% if it.invoice %}{{ it.invoice.period.start.strftime('%d/%m/%Y') }}{% endif %}</td>
+        <td>{% if it.invoice %}{{ it.invoice.period.end.strftime('%d/%m/%Y') }}{% endif %}</td>
         <td></td>
-        <td>{% if it.invoice %}{{ it.invoice.invoice_date }}{% else %}&mdash;{% endif %}</td>
-        <td>{{ it.transaction.date }}</td>
+        <td>{% if it.invoice and it.invoice.invoice_date %}{{ it.invoice.invoice_date.strftime('%d/%m/%Y') }}{% else %}&mdash;{% endif %}</td>
+        <td>{{ it.transaction.date.strftime('%d/%m/%Y') }}</td>
         <td>{{ it.transaction.description }}</td>
         <td>{{ it.transaction.amount }}</td>
         <td>{{ it.category }}</td>
@@ -322,6 +322,16 @@
   function days(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 86400000); }
   function daysInclusive(a, b) { return days(a, b) + 1; }
   function pad2(n) { return String(n).padStart(2, '0'); }
+  // Display formatter: ISO (YYYY-MM-DD, optionally with a time suffix) → DD/MM/YYYY.
+  // Used ONLY at render time for human-facing text; the underlying ISO strings
+  // stay untouched so date math, sorting, time axes and year filtering all keep
+  // working on the canonical format. Returns the input unchanged if it isn't a
+  // recognisable ISO date (e.g. null/undefined/"—").
+  function formatDate(iso) {
+    if (!iso) return iso;
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+    return m ? m[3] + '/' + m[2] + '/' + m[1] : iso;
+  }
 
   // For items lacking a real invoice (pattern- or manual-matched), guess
   // the period and invoice date from the category's recurrence. Rule: use
@@ -508,8 +518,8 @@
       let invoiceDateCell = '—';
       if (info) {
         const d = daysInclusive(info.period_start, info.period_end);
-        periodStartCell = info.period_start;
-        periodEndCell = info.period_end;
+        periodStartCell = formatDate(info.period_start);
+        periodEndCell = formatDate(info.period_end);
         periodLengthCell = d + ' day' + (d === 1 ? '' : 's');
         // Items without a real invoice show "—" in the Invoice date column,
         // matching the "real invoice without an invoice_date" case (e.g.
@@ -518,14 +528,14 @@
         // for line positioning) into it.invoice_date — so by the time we
         // reach this branch, info.invoice_date alone can't tell us whether
         // a real invoice exists. invoice_path is the canonical signal.
-        invoiceDateCell = (it.invoice_path && info.invoice_date) ? info.invoice_date : '—';
+        invoiceDateCell = (it.invoice_path && info.invoice_date) ? formatDate(info.invoice_date) : '—';
       }
       tr.innerHTML =
         '<td>' + periodStartCell + '</td>' +
         '<td>' + periodEndCell + '</td>' +
         '<td>' + periodLengthCell + '</td>' +
         '<td>' + invoiceDateCell + '</td>' +
-        '<td>' + it.date + '</td>' +
+        '<td>' + formatDate(it.date) + '</td>' +
         '<td>' + escapeHtml(it.description) + '</td>' +
         '<td>' + formatAmount(it.amount) + '</td>' +
         '<td>' + escapeHtml(it.category) + '</td>' +
@@ -623,6 +633,9 @@
     }));
     Plotly.newPlot(divId, traces, Object.assign({}, STATIC_LAYOUT_BASE, {
       barmode: 'stack',
+      // Month-granularity data: keep axis ticks as month-year (matching the
+      // hover) so they never fall back to a YYYY-MM-DD label.
+      xaxis: { tickformat: '%b %Y' },
     }), STATIC_CONFIG);
     const div = document.getElementById(divId);
     div.on('plotly_click', evt => {
@@ -813,11 +826,11 @@
       cd.payText.push(
         '<b>' + escapeHtml(it.description) + '</b><br>' +
         (it.period_start
-          ? 'Period: ' + it.period_start + ' → ' + it.period_end +
+          ? 'Period: ' + formatDate(it.period_start) + ' → ' + formatDate(it.period_end) +
             ' (' + periodDays + ' day' + (periodDays === 1 ? '' : 's') + ')<br>'
           : '') +
-        (it.invoice_date ? 'Invoice: ' + it.invoice_date + '<br>' : '') +
-        'Payment: ' + it.date + '<br>' +
+        (it.invoice_date ? 'Invoice: ' + formatDate(it.invoice_date) + '<br>' : '') +
+        'Payment: ' + formatDate(it.date) + '<br>' +
         formatAmount(it.amount) +
         (lag !== null ? '<br>Lag: ' + lag + ' days' : '')
       );
@@ -887,6 +900,9 @@
 
     Plotly.newPlot('chart-timeline', traces, Object.assign({}, STATIC_LAYOUT_BASE, {
       hovermode: 'closest',
+      // x carries real dates (ISO trace values); render the axis ticks as
+      // DD/MM/YYYY without touching the underlying values.
+      xaxis: { tickformat: '%d/%m/%Y' },
       // One row per item, most-recent at the top. The y axis carries no
       // semantic information beyond row identity, so hide ticks/grid; color
       // identifies the category and tooltip carries the per-item detail.

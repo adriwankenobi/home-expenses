@@ -19,6 +19,15 @@ from home_expenses.models import (
 from home_expenses.recurrence import Period, period_for
 
 
+def _fmt_date(d: date) -> str:
+    """Format a date for human-facing alert messages as DD/MM/YYYY.
+
+    Alert *payloads* keep ISO (YYYY-MM-DD) for machine consumption; only the
+    displayed ``message`` text uses this day-first format.
+    """
+    return d.strftime("%d/%m/%Y")
+
+
 @dataclass(frozen=True)
 class MatchResult:
     items: tuple[Item, ...]
@@ -455,9 +464,7 @@ def match(
     for cat_name, invs in inv_lists.items():
         for inv in invs:
             if (cat_name, inv.content_hash) not in consumed:
-                period_str = (
-                    f"{inv.period.start.isoformat()}→{inv.period.end.isoformat()}"
-                )
+                period_str = f"{_fmt_date(inv.period.start)}→{_fmt_date(inv.period.end)}"
                 alerts.append(
                     Alert(
                         kind=AlertKind.ORPHAN_INVOICE,
@@ -834,7 +841,7 @@ def _try_invoice_match(
         Alert(
             kind=AlertKind.AMBIGUOUS_INVOICE_MATCH,
             message=(
-                f"transaction {txn.date.isoformat()} '{txn.description}' "
+                f"transaction {_fmt_date(txn.date)} '{txn.description}' "
                 f"(amount={txn.amount}) has {len(candidates)} invoice candidates: "
                 f"{candidate_str}"
             ),
