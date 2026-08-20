@@ -117,6 +117,7 @@ def _serialize_model(model: ReportModel) -> str:
             name: {
                 "recurrence": rc.recurrence,
                 "period_contains_payment": rc.period_contains_payment,
+                "period_edge_days": rc.period_edge_days,
             }
             for name, rc in model.categories_by_name.items()
         },

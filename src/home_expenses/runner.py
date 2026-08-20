@@ -73,6 +73,7 @@ def run_report(config: Config, output_path: Path, today: date) -> RunSummary:
                 name=name,
                 recurrence=cat.recurrence,
                 period_contains_payment=cat.period_contains_payment,
+                period_edge_days=cat.period_edge_days,
             )
             for name, cat in config.categories.items()
         },

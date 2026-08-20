@@ -55,6 +55,12 @@
       "patterns": ["MONTHLY INVOICE"],
       "recurrence": "monthly"
     },
+    "monthlyChargedEarly": {
+      "patterns": ["HOA FEE"],
+      "recurrence": "monthly",
+      "period_contains_payment": true,
+      "period_edge_days": 2
+    },
     "bimonthly": {
       "patterns": ["BIMONTHLY INVOICE"],
       "recurrence": "bimonthly"

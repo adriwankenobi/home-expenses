@@ -45,6 +45,29 @@ Use this when a single transaction should be aggregated under an existing catego
 
 If `period_contains_payment: true` is set, the effective recurrence (mapping's `recurrence` if present, otherwise the referenced category's) must not be `"none"`.
 
+## Charges that land just before a period boundary
+
+A recurring charge sometimes arrives a day or two early — the fee *for May* hits your account on 30 April. By date it belongs to April, which leaves April with two charges and May with none, so you get a `recurring_missed` alert for May and a period bar drawn on the wrong month.
+
+`period_edge_days` fixes both. A payment landing in the last N days of the period containing it is attributed to the **following** period:
+
+```jsonc
+"Comunidad": {
+  "recurrence": "monthly",
+  "patterns": ["COMUNIDAD"],
+  "period_contains_payment": true,
+  "period_edge_days": 2          // 29 or 30 April → the May period
+}
+```
+
+The shift is **unconditional** — it doesn't look at what other charges exist. A payment that genuinely belongs to its own period but is dated inside the edge window gets pushed forward too, leaving its own period empty and raising `recurring_missed` there. That's deliberate: you see the anomaly rather than having it silently absorbed. Keep the window as narrow as the real billing behavior allows.
+
+The window is **trailing only**. It never reaches backwards, so a charge on 1 May stays in May. For a category billed in arrears (`period_contains_payment` unset or `false`) the trailing reach is already 1 day — a payment on the last day of a period settles that period — and `period_edge_days` widens it.
+
+`period_edge_days` must be a non-negative integer, requires a `recurrence` other than `"none"`, and must be shorter than the shortest period of that recurrence (28 days for `monthly`, 59 for `bimonthly`, 90 for `quarterly`, 365 for `yearly`). It is a category-level field; `manual_mappings` entries cannot override it.
+
+Note this is unrelated to `match_window_days`, which is the tolerance for pairing an *invoice* with the bank payment that settles it.
+
 ## Run
 
 ```bash

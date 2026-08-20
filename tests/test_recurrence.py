@@ -165,3 +165,105 @@ def test_period_for_yearly() -> None:
 def test_period_for_rejects_none() -> None:
     with pytest.raises(ValueError, match="recurrence"):
         period_for(date(2026, 1, 1), "none")
+
+
+# --- period_edge_days: trailing-edge attribution ---
+
+
+def _edge_cat(name: str, recurrence: Recurrence, edge_days: int) -> Category:
+    return Category(name=name, recurrence=recurrence, period_edge_days=edge_days)
+
+
+def test_edge_charge_counts_toward_next_period() -> None:
+    # May's fee was charged early, on the last day of April. With a 2-day
+    # trailing edge it counts toward May, so neither month looks empty.
+    items = [
+        make_item(transaction=make_transaction(date=date(2026, 4, 5)), category="fee"),
+        make_item(transaction=make_transaction(date=date(2026, 4, 30)), category="fee"),
+        make_item(transaction=make_transaction(date=date(2026, 6, 5)), category="fee"),
+    ]
+    alerts = check_recurrence(
+        items=items,
+        categories={"fee": _edge_cat("fee", "monthly", 2)},
+        statement_range=(date(2026, 4, 1), date(2026, 6, 30)),
+        today=date(2026, 8, 20),
+    )
+    assert alerts == []
+
+
+def test_edge_charge_leaves_its_own_period_empty() -> None:
+    # The shift is unconditional: a lone charge on the last day of April
+    # counts toward May, so April is reported missing.
+    items = [
+        make_item(transaction=make_transaction(date=date(2026, 4, 30)), category="fee"),
+    ]
+    alerts = check_recurrence(
+        items=items,
+        categories={"fee": _edge_cat("fee", "monthly", 2)},
+        statement_range=(date(2026, 4, 1), date(2026, 5, 31)),
+        today=date(2026, 8, 20),
+    )
+    periods = sorted(a.payload["period"] for a in alerts)
+    assert periods == ["2026-04"]
+
+
+def test_charge_just_outside_edge_window_counts_normally() -> None:
+    # April 28 is 2 full days before the period end — outside a 2-day edge.
+    items = [
+        make_item(transaction=make_transaction(date=date(2026, 4, 5)), category="fee"),
+        make_item(transaction=make_transaction(date=date(2026, 4, 28)), category="fee"),
+    ]
+    alerts = check_recurrence(
+        items=items,
+        categories={"fee": _edge_cat("fee", "monthly", 2)},
+        statement_range=(date(2026, 4, 1), date(2026, 5, 31)),
+        today=date(2026, 8, 20),
+    )
+    periods = sorted(a.payload["period"] for a in alerts)
+    assert periods == ["2026-05"]
+
+
+def test_edge_window_is_trailing_only() -> None:
+    # A charge on the FIRST day of May stays in May; the window never
+    # reaches backwards into the previous period.
+    items = [
+        make_item(transaction=make_transaction(date=date(2026, 5, 1)), category="fee"),
+    ]
+    alerts = check_recurrence(
+        items=items,
+        categories={"fee": _edge_cat("fee", "monthly", 2)},
+        statement_range=(date(2026, 4, 1), date(2026, 5, 31)),
+        today=date(2026, 8, 20),
+    )
+    periods = sorted(a.payload["period"] for a in alerts)
+    assert periods == ["2026-04"]
+
+
+def test_edge_days_zero_keeps_plain_date_attribution() -> None:
+    items = [
+        make_item(transaction=make_transaction(date=date(2026, 4, 5)), category="fee"),
+        make_item(transaction=make_transaction(date=date(2026, 4, 30)), category="fee"),
+    ]
+    alerts = check_recurrence(
+        items=items,
+        categories={"fee": _edge_cat("fee", "monthly", 0)},
+        statement_range=(date(2026, 4, 1), date(2026, 5, 31)),
+        today=date(2026, 8, 20),
+    )
+    periods = sorted(a.payload["period"] for a in alerts)
+    assert periods == ["2026-05"]
+
+
+def test_edge_charge_shifts_quarterly_period_across_year_boundary() -> None:
+    # Dec 31 with a 2-day edge belongs to Q1 of the following year.
+    items = [
+        make_item(transaction=make_transaction(date=date(2026, 10, 5)), category="fee"),
+        make_item(transaction=make_transaction(date=date(2026, 12, 31)), category="fee"),
+    ]
+    alerts = check_recurrence(
+        items=items,
+        categories={"fee": _edge_cat("fee", "quarterly", 2)},
+        statement_range=(date(2026, 10, 1), date(2027, 3, 31)),
+        today=date(2027, 8, 20),
+    )
+    assert alerts == []

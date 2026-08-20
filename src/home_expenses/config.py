@@ -82,6 +82,48 @@ def _parse_start_date(raw: str, recurrence: str, path: Path, name: str) -> date:
         ) from e
 
 
+# Shortest possible period, in days, for each recurrence kind. February makes
+# a monthly period 28 days; Jan+Feb a bimonthly one 59; Q1 a quarterly one 90.
+_MIN_PERIOD_DAYS: dict[str, int] = {
+    "monthly": 28,
+    "bimonthly": 59,
+    "quarterly": 90,
+    "yearly": 365,
+}
+
+
+def _parse_period_edge_days(raw: Any, recurrence: str, path: Path, name: str) -> int:
+    """Validate the trailing-edge window width for a category."""
+    if raw is None:
+        return 0
+    # bool is a subclass of int; `true` is not a day count.
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ConfigError(
+            f"{path}: category '{name}' period_edge_days must be a non-negative "
+            f"integer, got {raw!r}"
+        )
+    if raw < 0:
+        raise ConfigError(
+            f"{path}: category '{name}' period_edge_days must be a non-negative "
+            f"integer, got {raw!r}"
+        )
+    if raw == 0:
+        return 0
+    if recurrence == "none":
+        raise ConfigError(
+            f"{path}: category '{name}' has 'period_edge_days: {raw}' but recurrence "
+            f"is 'none'; this field requires a recurrence other than 'none'"
+        )
+    limit = _MIN_PERIOD_DAYS[recurrence]
+    if raw >= limit:
+        raise ConfigError(
+            f"{path}: category '{name}' period_edge_days ({raw}) must be shorter "
+            f"than the shortest {recurrence} period ({limit} days); a window that "
+            f"wide would shift every payment"
+        )
+    return raw
+
+
 @dataclass(frozen=True)
 class Category:
     name: str
@@ -92,6 +134,10 @@ class Category:
     match_window_days: int | None = None
     start_date: date | None = None  # No "missing" alerts before this date.
     period_contains_payment: bool = False
+    # A payment landing in the last N days of the period that contains it is
+    # attributed to the FOLLOWING period — "charged a day or two early for
+    # next period". 0 disables. See `assigned_period` in recurrence.py.
+    period_edge_days: int = 0
 
 
 @dataclass(frozen=True)
@@ -193,6 +239,9 @@ def load_config(path: Path) -> Config:
                 f"{path}: category '{name}' has 'period_contains_payment: true' but "
                 f"recurrence is 'none'; this flag requires a recurrence other than 'none'"
             )
+        period_edge_days = _parse_period_edge_days(
+            c.get("period_edge_days"), c["recurrence"], path, name
+        )
         categories[name] = Category(
             name=name,
             recurrence=c["recurrence"],
@@ -202,6 +251,7 @@ def load_config(path: Path) -> Config:
             match_window_days=c.get("match_window_days"),
             start_date=start_date_val,
             period_contains_payment=period_contains_payment,
+            period_edge_days=period_edge_days,
         )
 
     # Build implicit split groups from shared patterns. A category may have

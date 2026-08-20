@@ -468,3 +468,31 @@ def test_timeline_uses_unified_state(tmp_path: Path) -> None:
     render_report(model, out)
     html = out.read_text(encoding="utf-8")
     assert "hiddenTimelineCats" not in html
+
+
+def test_period_edge_days_renders_in_data_block(tmp_path: Path) -> None:
+    items = [
+        make_item(
+            transaction=make_transaction(date=date(2026, 4, 30), amount=Decimal("60.00")),
+            category="fee",
+        ),
+    ]
+    cats = {
+        "fee": ReportCategory(
+            name="fee",
+            recurrence="monthly",
+            period_contains_payment=True,
+            period_edge_days=2,
+        ),
+    }
+    model = build_report_model(
+        items=items,
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 8, 20),
+        categories_by_name=cats,
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    html = out.read_text(encoding="utf-8")
+    assert '"period_edge_days":2' in html or '"period_edge_days": 2' in html

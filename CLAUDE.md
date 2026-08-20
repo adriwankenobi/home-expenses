@@ -65,6 +65,19 @@ The runner's `_has_expected_invoice` filter exempts items with `from_manual_mapp
 
 When a transaction's manual_mapping resolves to the current category (`mapped_here == True`), the date-window check on each candidate invoice is skipped. Amount equality and the not-already-consumed check still apply. The user has explicitly authored the routing; bypass the window guard.
 
+### `Category.period_edge_days` is mirrored in Python and JS, with one asymmetry
+
+A payment in the last `period_edge_days` days of its containing period is attributed to the *following* period. Two implementations must stay in sync:
+
+- `assigned_period()` in `recurrence.py` — the **payment** period, used by `check_recurrence` to decide whether a period is covered.
+- `payPeriodFor()` / `syntheticPeriodFor()` in `report.html.j2` — the **consumption** period drawn as the period bar for items with no invoice.
+
+The asymmetry: the display path clamps the window to `max(1, period_edge_days)` when `period_contains_payment` is false. In-arrears display has always treated a payment on the last day of a period as settling that period (the old `+1 day` trick), so 1 is its floor. `assigned_period` has no such floor — it never had the `+1` behavior — so with `period_edge_days: 0` the two legitimately disagree for a last-day payment. Don't "fix" that by adding the floor to `assigned_period`: `check_recurrence` counts payments per calendar period, and a payment on 30 April did happen in April.
+
+The shift is unconditional by design (no "only when it disambiguates" rule): a payment inside the edge window moves even if that empties its own period, which then raises `RECURRING_MISSED`. Surfacing the anomaly beats absorbing it.
+
+There is no JS test harness in this repo; the template logic is verified by hand against the table of cases in the README section and the docstring examples.
+
 ## Alert kinds
 
 `AlertKind` (in `models.py`) enumerates every alert. New kinds added during the mixed-invoice work:

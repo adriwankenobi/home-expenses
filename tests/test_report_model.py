@@ -80,3 +80,21 @@ def test_categories_by_name_carries_period_contains_payment() -> None:
     assert rc.name == "fee"
     assert rc.recurrence == "yearly"
     assert rc.period_contains_payment is True
+
+
+def test_categories_by_name_carries_period_edge_days() -> None:
+    model = build_report_model(
+        items=[],
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={
+            "fee": ReportCategory(
+                name="fee",
+                recurrence="monthly",
+                period_contains_payment=True,
+                period_edge_days=2,
+            )
+        },
+    )
+    assert model.categories_by_name["fee"].period_edge_days == 2

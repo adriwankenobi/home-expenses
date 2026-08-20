@@ -358,43 +358,65 @@
     return formatDate(startIso) + ' to ' + formatDate(endIso);
   }
 
-  // For items lacking a real invoice (pattern- or manual-matched), guess
-  // the period and invoice date from the category's recurrence. Rule: use
-  // the most recent period whose period_end is strictly before
-  // (payment_date + 1 day) — i.e. the period prior to the one containing
-  // (payment_date + 1). The +1 shift makes the on-last-day case fall out
-  // naturally without a branch. Examples: quarterly 2026-03-31 → Q1 2026;
-  // quarterly 2026-04-15 → Q1 2026; monthly 2026-04-30 → April; monthly
-  // 2026-05-01 → April; yearly 2026-12-31 → 2026; yearly 2026-04-15 →
-  // 2025. When containsPayment is true, use the period containing the
-  // payment date; when false, use the period before it. Returns null for
-  // "none". invoice_date is the last day of the synthetic period.
-  function syntheticPeriodFor(paymentIso, recurrence, containsPayment) {
-    if (!recurrence || recurrence === 'none') return null;
-    const d = new Date(paymentIso + 'T00:00:00');
-    if (!containsPayment) {
-      d.setDate(d.getDate() + 1);
-    }
-    const y = d.getFullYear();
-    const m = d.getMonth();
-
-    let width, containingStartMonth;
+  // Width of one period in months, or null for 'none'/unknown.
+  function periodWidthFor(recurrence) {
     switch (recurrence) {
-      case 'monthly':   width = 1;  containingStartMonth = m; break;
-      case 'bimonthly': width = 2;  containingStartMonth = Math.floor(m / 2) * 2; break;
-      case 'quarterly': width = 3;  containingStartMonth = Math.floor(m / 3) * 3; break;
-      case 'yearly':    width = 12; containingStartMonth = 0; break;
+      case 'monthly':   return 1;
+      case 'bimonthly': return 2;
+      case 'quarterly': return 3;
+      case 'yearly':    return 12;
       default: return null;
     }
-    let startMonth = containsPayment
-      ? containingStartMonth
-      : containingStartMonth - width;
-    let startYear = y;
-    if (startMonth < 0) { startMonth += 12; startYear -= 1; }
-    const endMonth = startMonth + width - 1;
-    const lastDay = new Date(startYear, endMonth + 1, 0).getDate();
-    const start = `${startYear}-${pad2(startMonth + 1)}-01`;
-    const end = `${startYear}-${pad2(endMonth + 1)}-${pad2(lastDay)}`;
+  }
+
+  // Normalize a possibly out-of-range month index into {startYear, startMonth}.
+  function normalizeMonth(year, month) {
+    const carry = Math.floor(month / 12);
+    return { startYear: year + carry, startMonth: month - carry * 12 };
+  }
+
+  // The period a payment belongs to AS A PAYMENT: the one containing it,
+  // unless it lands within the final `edgeDays` days, in which case it
+  // belongs to the next one ("charged a day or two early for next period").
+  // Mirrors `assigned_period` in recurrence.py — keep the two in sync.
+  function payPeriodFor(paymentIso, width, edgeDays) {
+    const d = new Date(paymentIso + 'T00:00:00');
+    const y = d.getFullYear();
+    const startMonth = width === 12 ? 0 : Math.floor(d.getMonth() / width) * width;
+    const periodEnd = new Date(y, startMonth + width, 0);
+    const daysLeft = Math.round((periodEnd - d) / 86400000);
+    return normalizeMonth(y, startMonth + (daysLeft < edgeDays ? width : 0));
+  }
+
+  // For items lacking a real invoice (pattern- or manual-matched), guess the
+  // consumption period and invoice date from the category's recurrence.
+  // The payment is first attributed to a period (see payPeriodFor); when
+  // containsPayment is true that IS the consumption period, when false the
+  // consumption period is the one before it.
+  //
+  // The in-arrears path (containsPayment false) inherently reaches back one
+  // day — a payment on the last day of a period settles that period — so its
+  // edge window is at least 1. period_edge_days widens that reach, and is the
+  // whole rule when containsPayment is true. With period_edge_days unset the
+  // documented cases hold: quarterly 2026-03-31 → Q1 2026; quarterly
+  // 2026-04-15 → Q1 2026; monthly 2026-04-30 → April; monthly 2026-05-01 →
+  // April; yearly 2026-12-31 → 2026; yearly 2026-04-15 → 2025.
+  //
+  // Returns null for "none". invoice_date is the last day of the period.
+  function syntheticPeriodFor(paymentIso, recurrence, containsPayment, edgeDays) {
+    const width = periodWidthFor(recurrence);
+    if (width === null) return null;
+    const edge = containsPayment
+      ? (edgeDays || 0)
+      : Math.max(1, edgeDays || 0);
+    const pay = payPeriodFor(paymentIso, width, edge);
+    const p = containsPayment
+      ? pay
+      : normalizeMonth(pay.startYear, pay.startMonth - width);
+    const endMonth = p.startMonth + width - 1;
+    const lastDay = new Date(p.startYear, endMonth + 1, 0).getDate();
+    const start = `${p.startYear}-${pad2(p.startMonth + 1)}-01`;
+    const end = `${p.startYear}-${pad2(endMonth + 1)}-${pad2(lastDay)}`;
     return { period_start: start, period_end: end, invoice_date: end };
   }
 
@@ -419,7 +441,8 @@
                               && it.display_period_contains_payment !== undefined)
       ? it.display_period_contains_payment
       : (meta && meta.period_contains_payment);
-    const synth = syntheticPeriodFor(it.date, recurrence, containsPayment);
+    const edgeDays = (meta && meta.period_edge_days) || 0;
+    const synth = syntheticPeriodFor(it.date, recurrence, containsPayment, edgeDays);
     if (synth === null) return null;
     return { ...synth, synthetic: true };
   }

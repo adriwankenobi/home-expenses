@@ -515,6 +515,99 @@ def test_period_contains_payment_rejected_with_recurrence_none(tmp_path: Path) -
         load_config(p)
 
 
+# --- period_edge_days ---
+
+
+def test_period_edge_days_defaults_to_zero(tmp_path: Path) -> None:
+    p = _write_config(tmp_path, _valid_payload(tmp_path))
+
+    cfg = load_config(p)
+
+    assert cfg.categories["electricity"].period_edge_days == 0
+
+
+def test_period_edge_days_accepted(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["fee"] = {
+        "recurrence": "monthly",
+        "patterns": ["FEE"],
+        "period_edge_days": 2,
+    }
+    p = _write_config(tmp_path, payload)
+
+    cfg = load_config(p)
+
+    assert cfg.categories["fee"].period_edge_days == 2
+
+
+def test_period_edge_days_rejected_with_recurrence_none(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["fee"] = {
+        "recurrence": "none",
+        "patterns": ["FEE"],
+        "period_edge_days": 2,
+    }
+    p = _write_config(tmp_path, payload)
+
+    with pytest.raises(ConfigError, match="period_edge_days.*recurrence"):
+        load_config(p)
+
+
+def test_period_edge_days_rejected_when_negative(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["fee"] = {
+        "recurrence": "monthly",
+        "patterns": ["FEE"],
+        "period_edge_days": -1,
+    }
+    p = _write_config(tmp_path, payload)
+
+    with pytest.raises(ConfigError, match="period_edge_days"):
+        load_config(p)
+
+
+def test_period_edge_days_rejected_when_not_an_integer(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["fee"] = {
+        "recurrence": "monthly",
+        "patterns": ["FEE"],
+        "period_edge_days": "2",
+    }
+    p = _write_config(tmp_path, payload)
+
+    with pytest.raises(ConfigError, match="period_edge_days"):
+        load_config(p)
+
+
+def test_period_edge_days_rejected_when_as_long_as_the_period(tmp_path: Path) -> None:
+    # A monthly period can be 28 days; an edge window that long would swallow
+    # the whole period and shift every charge.
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["fee"] = {
+        "recurrence": "monthly",
+        "patterns": ["FEE"],
+        "period_edge_days": 28,
+    }
+    p = _write_config(tmp_path, payload)
+
+    with pytest.raises(ConfigError, match="period_edge_days"):
+        load_config(p)
+
+
+def test_period_edge_days_large_value_allowed_for_yearly(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["categories"]["fee"] = {
+        "recurrence": "yearly",
+        "patterns": ["FEE"],
+        "period_edge_days": 20,
+    }
+    p = _write_config(tmp_path, payload)
+
+    cfg = load_config(p)
+
+    assert cfg.categories["fee"].period_edge_days == 20
+
+
 # --- manual_mapping object form ---
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from home_expenses.config import Category
 from home_expenses.models import Alert, AlertKind, Item
@@ -66,6 +66,28 @@ def period_for(d: date, recurrence: str) -> Period:
     raise ValueError(f"period_for: unsupported recurrence {recurrence!r}")
 
 
+def assigned_period(d: date, recurrence: str, edge_days: int = 0) -> Period:
+    """Return the period a payment dated `d` is attributed to.
+
+    Normally that is the period containing `d`. When `edge_days > 0`, a
+    payment landing in the last `edge_days` days of its containing period is
+    attributed to the *following* period instead — the "charged a day or two
+    early for next period" case.
+
+    The shift is unconditional: it does not look at what other payments
+    exist. A payment genuinely belonging to its own period but dated inside
+    the edge window is pushed forward too, leaving its own period empty and
+    surfacing a RECURRING_MISSED alert. That is the intended feedback loop.
+
+    The JS ``syntheticPeriodFor`` in the report template mirrors this shift;
+    keep the two in sync.
+    """
+    p = period_for(d, recurrence)
+    if edge_days > 0 and (p.end - d).days < edge_days:
+        return period_for(p.end + timedelta(days=1), recurrence)
+    return p
+
+
 def check_recurrence(
     *,
     items: Iterable[Item],
@@ -89,7 +111,9 @@ def check_recurrence(
             count = sum(
                 1
                 for it in items
-                if it.category == name and period.start <= it.transaction.date <= period.end
+                if it.category == name
+                and assigned_period(it.transaction.date, cat.recurrence, cat.period_edge_days).label
+                == period.label
             )
             if count == 0:
                 alerts.append(

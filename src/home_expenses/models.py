@@ -93,6 +93,7 @@ class ReportCategory:
     name: str
     recurrence: str
     period_contains_payment: bool
+    period_edge_days: int = 0
 
 
 @dataclass(frozen=True)
