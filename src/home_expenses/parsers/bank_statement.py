@@ -12,6 +12,11 @@ from home_expenses.models import BankStatementFile, Transaction
 
 _REQUIRED_COLUMNS = ("F. ejecución", "Concepto", "Importe")
 
+# Always day-first, then month, then year. The bank exports either a padded
+# four-digit-year date (18/05/2026) or an unpadded two-digit-year one (1/9/26);
+# the two are mutually exclusive, so the try-order never disambiguates anything.
+_DATE_FORMATS = ("%d/%m/%Y", "%d/%m/%y")
+
 
 class BankStatementParseError(ValueError):
     """Raised when a bank statement CSV cannot be parsed."""
@@ -33,10 +38,13 @@ def _parse_amount(raw: str) -> Decimal:
 
 
 def _parse_date(raw: str) -> date:
-    try:
-        return datetime.strptime(raw.strip(), "%d/%m/%Y").date()
-    except ValueError as e:
-        raise BankStatementParseError("invalid date") from e
+    raw = raw.strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    raise BankStatementParseError("invalid date")
 
 
 def parse_bank_statement(path: Path) -> BankStatementFile:

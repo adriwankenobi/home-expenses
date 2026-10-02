@@ -87,3 +87,71 @@ def test_short_row_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(BankStatementParseError, match="fewer columns"):
         parse_bank_statement(bad)
+
+
+SHORT_DATE_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "templates" / "bank_statement_short_dates.csv"
+)
+
+
+def test_parses_unpadded_day_month_two_digit_year() -> None:
+    result = parse_bank_statement(SHORT_DATE_FIXTURE)
+    pepe = next(t for t in result.transactions if t.description == "PEPE ENERGY INVOICE")
+    assert pepe.date == date(2026, 9, 1)
+
+
+def test_two_digit_year_with_two_digit_month() -> None:
+    result = parse_bank_statement(SHORT_DATE_FIXTURE)
+    fee = next(t for t in result.transactions if t.description == "ACCOUNT MAINTENANCE FEE")
+    assert fee.date == date(2026, 10, 1)
+
+
+def test_ambiguous_short_date_is_day_first() -> None:
+    # "3/4/26" must be 3 April, never 4 March.
+    result = parse_bank_statement(SHORT_DATE_FIXTURE)
+    payroll = next(t for t in result.transactions if t.description == "PAYROLL CREDIT")
+    assert payroll.date == date(2026, 4, 3)
+
+
+def test_both_date_formats_coexist_in_one_file() -> None:
+    result = parse_bank_statement(SHORT_DATE_FIXTURE)
+    hoa = next(t for t in result.transactions if t.description == "HOA FEE")
+    assert hoa.date == date(2026, 5, 18)
+
+
+def test_short_date_file_date_range() -> None:
+    result = parse_bank_statement(SHORT_DATE_FIXTURE)
+    assert result.date_range == (date(2026, 4, 3), date(2026, 10, 1))
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1/9/26", date(2026, 9, 1)),
+        ("01/09/26", date(2026, 9, 1)),
+        ("1/9/2026", date(2026, 9, 1)),
+        ("01/09/2026", date(2026, 9, 1)),
+        ("31/12/26", date(2026, 12, 31)),
+    ],
+)
+def test_accepted_date_spellings(tmp_path: Path, raw: str, expected: date) -> None:
+    csv_path = tmp_path / "s.csv"
+    csv_path.write_text(
+        '"";"F. ejecución";"F. valor";"Concepto";"Importe";"Saldo"\n'
+        f'"";"{raw}";"{raw}";"X";"-1,00";"0"\n',
+        encoding="cp1252",
+    )
+    assert parse_bank_statement(csv_path).transactions[0].date == expected
+
+
+@pytest.mark.parametrize("raw", ["2026-05-18", "18.05.2026", "13/13/26", "", "5/26"])
+def test_rejected_date_spellings(tmp_path: Path, raw: str) -> None:
+    csv_path = tmp_path / "s.csv"
+    csv_path.write_text(
+        '"";"F. ejecución";"F. valor";"Concepto";"Importe";"Saldo"\n'
+        f'"";"{raw}";"{raw}";"X";"-1,00";"0"\n',
+        encoding="cp1252",
+    )
+    with pytest.raises(BankStatementParseError, match="date"):
+        parse_bank_statement(csv_path)
+
