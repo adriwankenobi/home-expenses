@@ -40,7 +40,12 @@ def match(
     invoices_by_category: Mapping[str, Iterable[Invoice]],
     config: Config,
 ) -> MatchResult:
-    transactions = list(transactions)
+    # Sort by date before anything else: invoice claiming is greedy and
+    # first-come-first-served, so the order must be chronological rather
+    # than whatever order the statement files happened to list rows in
+    # (bank CSV exports are newest-first). Description and amount are
+    # secondary keys so same-day rows are ordered deterministically too.
+    transactions = sorted(transactions, key=lambda t: (t.date, t.description, t.amount))
     inv_lists: dict[str, list[Invoice]] = {k: list(v) for k, v in invoices_by_category.items()}
     consumed: set[tuple[str, str]] = set()
     items: list[Item] = []

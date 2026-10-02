@@ -2407,3 +2407,82 @@ def test_mixed_split_group_leftover_mapping_to_invoiced_member_routes_without_in
     assert all(
         a.kind is not AlertKind.EXPENSE_MISSING_INVOICE for a in result.alerts
     )
+
+
+def test_invoice_pairs_with_nearest_payment_regardless_of_input_order() -> None:
+    """Two same-amount payments, one invoice: the nearer payment wins.
+
+    Regression: bank CSV exports are newest-first, so the matcher used to
+    hand the invoice to whichever payment appeared first in input order.
+    """
+    invoice = make_invoice(
+        source_path="/tmp/water.pdf",
+        content_hash="a" * 64,
+        amount=Decimal("35.00"),
+        invoice_date=date(2026, 6, 12),
+        period_start=date(2026, 3, 21),
+        period_end=date(2026, 5, 20),
+    )
+    near = make_transaction(date=date(2026, 6, 15), description="WATER CO", amount=Decimal("35.00"))
+    far = make_transaction(date=date(2026, 10, 15), description="WATER CO", amount=Decimal("35.00"))
+    config = _config(
+        categories={
+            "Water": Category(
+                name="Water",
+                recurrence="none",
+                invoice_folder=Path("/tmp/water"),
+                invoice_parser="pepeenergy",
+                patterns=("WATER CO",),
+                match_window_days=180,
+            )
+        }
+    )
+    # Newest-first, exactly how the bank exports it.
+    result = match((far, near), {"Water": [invoice]}, config)
+    paired = next(i for i in result.items if i.invoice is invoice)
+    assert paired.transaction.date == date(2026, 6, 15)
+
+
+def test_match_is_independent_of_transaction_input_order() -> None:
+    invoice = make_invoice(
+        source_path="/tmp/water.pdf",
+        content_hash="a" * 64,
+        amount=Decimal("35.00"),
+        invoice_date=date(2026, 6, 12),
+        period_start=date(2026, 3, 21),
+        period_end=date(2026, 5, 20),
+    )
+    txns = (
+        make_transaction(date=date(2026, 6, 15), description="WATER CO", amount=Decimal("35.00")),
+        make_transaction(date=date(2026, 10, 15), description="WATER CO", amount=Decimal("35.00")),
+        make_transaction(date=date(2026, 1, 9), description="WATER CO", amount=Decimal("12.00")),
+    )
+    config = _config(
+        categories={
+            "Water": Category(
+                name="Water",
+                recurrence="none",
+                invoice_folder=Path("/tmp/water"),
+                invoice_parser="pepeenergy",
+                patterns=("WATER CO",),
+                match_window_days=180,
+            )
+        }
+    )
+    invs: Mapping[str, list[object]] = {"Water": [invoice]}
+
+    def fingerprint(res: MatchResult) -> set[tuple[str, str, str, str | None]]:
+        return {
+            (
+                i.transaction.date.isoformat(),
+                str(i.transaction.amount),
+                i.category,
+                i.invoice.source_path if i.invoice else None,
+            )
+            for i in res.items
+        }
+
+    ascending = match(txns, invs, config)  # type: ignore[arg-type]
+    descending = match(tuple(reversed(txns)), invs, config)  # type: ignore[arg-type]
+    assert fingerprint(ascending) == fingerprint(descending)
+
