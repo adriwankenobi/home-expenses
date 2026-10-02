@@ -588,3 +588,31 @@ def test_credit_shows_negative_in_the_rendered_table(tmp_path: Path) -> None:
     render_report(model, out)
     assert "-11.11" in out.read_text(encoding="utf-8")
 
+
+def test_alerts_carry_their_years_for_the_year_filter(tmp_path: Path) -> None:
+    model = build_report_model(
+        items=[make_item(transaction=make_transaction(date=date(2026, 5, 18)))],
+        alerts=[
+            Alert(
+                kind=AlertKind.RECURRING_MISSED,
+                message="missed",
+                payload={"category": "Energy", "period": "2024-11"},
+            ),
+            Alert(
+                kind=AlertKind.ORPHAN_INVOICE,
+                message="orphan",
+                payload={"period_start": "2023-11-15", "period_end": "2024-02-09"},
+            ),
+            Alert(kind=AlertKind.UNUSED_MANUAL_MAPPING, message="dateless", payload={}),
+        ],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={},
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    html = out.read_text(encoding="utf-8")
+    assert 'data-years="2024"' in html
+    assert 'data-years="2023 2024"' in html
+    # A dateless alert gets an empty list and stays visible under every tab.
+    assert 'data-years=""' in html

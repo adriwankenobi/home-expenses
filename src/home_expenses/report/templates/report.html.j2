@@ -88,12 +88,15 @@
 <div class="section">
   <h2>Alerts</h2>
   {% if model.alerts %}
+    <div id="alerts-list">
     {% for a in model.alerts %}
-      <div class="alert{% if a.accepted %} accepted{% endif %}" data-kind="{{ a.kind.value }}" data-accepted="{{ 'true' if a.accepted else 'false' }}">
+      <div class="alert{% if a.accepted %} accepted{% endif %}" data-kind="{{ a.kind.value }}" data-accepted="{{ 'true' if a.accepted else 'false' }}" data-years="{{ a | alert_years | join(' ') }}">
         <strong>{{ a.kind.value }}</strong> — {{ a.message }}
         {% if a.note %}<div class="alert-note">{{ a.note }}</div>{% endif %}
       </div>
     {% endfor %}
+    </div>
+    <p id="alerts-empty" style="display:none">No alerts for this year.</p>
   {% else %}
     <p>No alerts. Everything reconciles.</p>
   {% endif %}
@@ -105,7 +108,7 @@
     <div class="kpi"><div class="big" id="kpi-total">—</div><div class="label">Total</div></div>
     <div class="kpi"><div class="big" id="kpi-txns">—</div><div class="label">Transactions</div></div>
     <div class="kpi"><div class="big" id="kpi-cats">—</div><div class="label">Categories</div></div>
-    <div class="kpi"><div class="big" id="kpi-alerts">{{ model.alerts | rejectattr('accepted') | list | length }}</div><div class="label">Open alerts{% set n_acc = model.alerts | selectattr('accepted') | list | length %}{% if n_acc %} &middot; {{ n_acc }} accepted{% endif %}</div></div>
+    <div class="kpi"><div class="big" id="kpi-alerts">{{ model.alerts | rejectattr('accepted') | list | length }}</div><div class="label">Open alerts<span id="kpi-alerts-accepted">{% set n_acc = model.alerts | selectattr('accepted') | list | length %}{% if n_acc %} &middot; {{ n_acc }} accepted{% endif %}</span></div></div>
   </div>
   <div class="cat-grid" id="cat-grid"></div>
 </div>
@@ -500,6 +503,30 @@
     renderConsumed(items);
     renderDonut(items);
     renderTimeline(items);
+    renderAlerts();
+  }
+
+  // Alerts are server-rendered (not built from `data`), so filtering means
+  // showing/hiding the existing nodes. `data-years` is a space-separated list
+  // computed by `alert_years` in render.py; an EMPTY list means the alert is
+  // not tied to any year (a config-level statement) and stays visible under
+  // every tab.
+  function renderAlerts() {
+    const list = document.getElementById('alerts-list');
+    if (!list) return;
+    let open = 0, accepted = 0;
+    list.querySelectorAll('.alert').forEach(el => {
+      const years = (el.dataset.years || '').split(' ').filter(Boolean);
+      const visible = activeYear === 'all' || years.length === 0
+        || years.includes(activeYear);
+      el.style.display = visible ? '' : 'none';
+      if (visible) { el.dataset.accepted === 'true' ? accepted++ : open++; }
+    });
+    document.getElementById('kpi-alerts').textContent = open;
+    document.getElementById('kpi-alerts-accepted').innerHTML =
+      accepted ? ' &middot; ' + accepted + ' accepted' : '';
+    document.getElementById('alerts-empty').style.display =
+      (open + accepted) === 0 ? '' : 'none';
   }
 
   function renderCategoryBreakdown(items) {

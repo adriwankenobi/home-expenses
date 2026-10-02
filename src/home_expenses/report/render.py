@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import calendar
 import json
+import re
+from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import plotly  # type: ignore[import-untyped]
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from home_expenses.models import Item, ReportModel, Transaction
+from home_expenses.models import Alert, Item, ReportModel, Transaction
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -70,12 +73,65 @@ def format_period(start: date | None, end: date | None) -> str:
     return f"{start.strftime('%d/%m/%Y')} to {end.strftime('%d/%m/%Y')}"
 
 
+_YEAR_IN_TEXT_RE = re.compile(r"\b(19|20)\d{2}\b")
+# Payload keys that carry a date. `period` is a label ("2024-11", "2025-Q2",
+# "2026"); the others are ISO dates.
+_DATE_KEYS = ("date", "invoice_date")
+_SPAN_KEYS = ("period_start", "period_end")
+
+
+def _years_from_fields(payload: Mapping[str, Any]) -> set[int]:
+    years: set[int] = set()
+    for key in _DATE_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and len(value) >= 4 and value[:4].isdigit():
+            years.add(int(value[:4]))
+    label = payload.get("period")
+    if isinstance(label, str) and len(label) >= 4 and label[:4].isdigit():
+        years.add(int(label[:4]))
+    bounds = [
+        int(v[:4])
+        for k in _SPAN_KEYS
+        if isinstance(v := payload.get(k), str) and len(v) >= 4 and v[:4].isdigit()
+    ]
+    if bounds:
+        # An invoice period can straddle a year boundary, so the alert belongs
+        # to every year it touches, not just the one it started in.
+        years.update(range(min(bounds), max(bounds) + 1))
+    return years
+
+
+def alert_years(alert: Alert) -> tuple[int, ...]:
+    """Years an alert belongs to, for the report's year-tab filter.
+
+    Resolved in order of how trustworthy the source is:
+
+    1. Date-bearing payload fields.
+    2. The acceptance rule embedded in an `unused_alert_acceptance` payload —
+       a stale rule inherits the year of whatever it was written to accept.
+    3. A four-digit year written in the user's `note`. Free text, so this is
+       a last resort and only consulted when nothing structured was found.
+
+    An empty result means the alert is not tied to any year (a config-level
+    statement), and the report shows it under every year tab.
+    """
+    years = _years_from_fields(alert.payload)
+    if not years:
+        nested = alert.payload.get("match")
+        if isinstance(nested, Mapping):
+            years = _years_from_fields(nested)
+    if not years and alert.note:
+        years = {int(m.group(0)) for m in _YEAR_IN_TEXT_RE.finditer(alert.note)}
+    return tuple(sorted(years))
+
+
 def render_report(model: ReportModel, output_path: Path) -> None:
     env = Environment(
         loader=FileSystemLoader(_TEMPLATE_DIR),
         autoescape=select_autoescape(["html", "j2"]),
     )
     env.filters["format_period"] = format_period
+    env.filters["alert_years"] = alert_years
     template = env.get_template("report.html.j2")
     sorted_items = sorted(model.items, key=_item_sort_key, reverse=True)
     html = template.render(
