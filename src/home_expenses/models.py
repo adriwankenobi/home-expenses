@@ -11,11 +11,21 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Transaction:
-    """One outgoing line from a bank statement (amount is always positive)."""
+    """One line from a bank statement.
+
+    `amount` is always a positive magnitude; the direction lives in
+    `is_credit` so that every amount-equality comparison in the matcher
+    (invoice pairing, manual_mappings, split-group ranking) keeps working
+    on a single, sign-free representation.
+    """
 
     date: date
     description: str
     amount: Decimal
+    # True when the statement row was money IN (a refund, a credit note).
+    # Credits never consume an invoice and are subtracted, not added, in
+    # the report.
+    is_credit: bool = False
 
 
 @dataclass(frozen=True)

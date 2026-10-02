@@ -149,7 +149,7 @@
         <td>{% if it.invoice and it.invoice.invoice_date %}{{ it.invoice.invoice_date.strftime('%d/%m/%Y') }}{% else %}&mdash;{% endif %}</td>
         <td>{{ it.transaction.date.strftime('%d/%m/%Y') }}</td>
         <td>{{ it.transaction.description }}</td>
-        <td>{{ it.transaction.amount }}</td>
+        <td>{{ '-' if it.transaction.is_credit else '' }}{{ it.transaction.amount }}</td>
         <td>{{ it.category }}</td>
         <td>{% if it.invoice %}<a href="file://{{ it.invoice.source_path }}" target="_blank">📎</a>{% endif %}</td>
       </tr>

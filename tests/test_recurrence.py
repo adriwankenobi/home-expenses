@@ -267,3 +267,25 @@ def test_edge_charge_shifts_quarterly_period_across_year_boundary() -> None:
         today=date(2027, 8, 20),
     )
     assert alerts == []
+
+
+def test_credit_only_period_still_reports_missing() -> None:
+    """A refund is not a payment: it must not cover a recurring period."""
+    from decimal import Decimal
+
+    from home_expenses.models import Transaction
+
+    cat = Category(name="Energy", recurrence="monthly", patterns=("ENERGY",))
+    refund = Transaction(
+        date=date(2026, 3, 10),
+        description="ENERGY",
+        amount=Decimal("11.11"),
+        is_credit=True,
+    )
+    alerts = check_recurrence(
+        items=[Item(transaction=refund, category="Energy", invoice=None)],
+        categories={"Energy": cat},
+        statement_range=(date(2026, 3, 1), date(2026, 3, 31)),
+        today=date(2026, 5, 1),
+    )
+    assert [a.payload["period"] for a in alerts] == ["2026-03"]

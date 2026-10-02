@@ -155,3 +155,26 @@ def test_rejected_date_spellings(tmp_path: Path, raw: str) -> None:
     with pytest.raises(BankStatementParseError, match="date"):
         parse_bank_statement(csv_path)
 
+
+def test_outgoing_rows_are_not_credits() -> None:
+    result = parse_bank_statement(FIXTURE)
+    pepe = next(t for t in result.transactions if t.description == "PEPE ENERGY INVOICE")
+    assert pepe.is_credit is False
+
+
+def test_incoming_rows_are_flagged_as_credits() -> None:
+    result = parse_bank_statement(FIXTURE)
+    payroll = next(t for t in result.transactions if t.description == "PAYROLL CREDIT")
+    assert payroll.is_credit is True
+    # Amount stays a positive magnitude; the sign lives in is_credit.
+    assert payroll.amount == Decimal("1500.00")
+
+
+def test_zero_amount_row_is_not_a_credit(tmp_path: Path) -> None:
+    csv_path = tmp_path / "s.csv"
+    csv_path.write_text(
+        '"";"F. ejecución";"F. valor";"Concepto";"Importe";"Saldo"\n'
+        '"";"18/05/2026";"18/05/2026";"SETTLEMENT";"0,00";"0"\n',
+        encoding="cp1252",
+    )
+    assert parse_bank_statement(csv_path).transactions[0].is_credit is False

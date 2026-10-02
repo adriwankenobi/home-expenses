@@ -14,7 +14,7 @@ from home_expenses.config import (
     SplitGroupKind,
 )
 from home_expenses.matcher import MatchResult, match
-from home_expenses.models import AlertKind
+from home_expenses.models import AlertKind, Transaction
 from tests.factories import make_invoice, make_transaction
 
 
@@ -2486,3 +2486,68 @@ def test_match_is_independent_of_transaction_input_order() -> None:
     descending = match(tuple(reversed(txns)), invs, config)  # type: ignore[arg-type]
     assert fingerprint(ascending) == fingerprint(descending)
 
+
+def _invoiced_config() -> Config:
+    return _config(
+        categories={
+            "Water": Category(
+                name="Water",
+                recurrence="none",
+                invoice_folder=Path("/tmp/water"),
+                invoice_parser="pepeenergy",
+                patterns=("WATER CO",),
+                match_window_days=30,
+            )
+        }
+    )
+
+
+def test_credit_does_not_consume_an_invoice_of_equal_amount() -> None:
+    invoice = make_invoice(
+        source_path="/tmp/water.pdf",
+        content_hash="a" * 64,
+        amount=Decimal("35.00"),
+        invoice_date=date(2026, 6, 1),
+    )
+    refund = make_transaction(
+        date=date(2026, 6, 10), description="WATER CO", amount=Decimal("35.00")
+    )
+    refund = Transaction(
+        date=refund.date, description=refund.description, amount=refund.amount, is_credit=True
+    )
+    result = match((refund,), {"Water": [invoice]}, _invoiced_config())
+    assert all(i.invoice is None for i in result.items)
+    assert any(a.kind is AlertKind.ORPHAN_INVOICE for a in result.alerts)
+
+
+def test_credit_is_still_categorised_by_pattern() -> None:
+    refund = Transaction(
+        date=date(2026, 6, 10),
+        description="WATER CO",
+        amount=Decimal("35.00"),
+        is_credit=True,
+    )
+    config = _config(
+        categories={"Water": Category(name="Water", recurrence="none", patterns=("WATER CO",))}
+    )
+    result = match((refund,), {}, config)
+    assert [i.category for i in result.items] == ["Water"]
+
+
+def test_credit_does_not_steal_an_invoice_from_a_real_charge() -> None:
+    invoice = make_invoice(
+        source_path="/tmp/water.pdf",
+        content_hash="a" * 64,
+        amount=Decimal("35.00"),
+        invoice_date=date(2026, 6, 1),
+    )
+    refund = Transaction(
+        date=date(2026, 6, 5), description="WATER CO", amount=Decimal("35.00"), is_credit=True
+    )
+    charge = make_transaction(
+        date=date(2026, 6, 12), description="WATER CO", amount=Decimal("35.00")
+    )
+    result = match((refund, charge), {"Water": [invoice]}, _invoiced_config())
+    paired = [i for i in result.items if i.invoice is not None]
+    assert len(paired) == 1
+    assert paired[0].transaction is charge

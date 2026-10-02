@@ -687,6 +687,8 @@ def _resolve_chronological_buckets(
         )
         cat_txns: list[Transaction] = []
         for txn in transactions:
+            if txn.is_credit:
+                continue
             desc_upper = txn.description.upper()
             mapping = resolve_manual_mapping(txn.description, txn.amount, config)
             pattern_hit = any(p.upper() in desc_upper for p in cat.patterns)
@@ -789,6 +791,11 @@ def _try_invoice_match(
     *,
     restrict_to: frozenset[str] | None = None,
 ) -> tuple[str | None, Invoice | None]:
+    # A credit (refund, credit note) is money coming back, not a bill being
+    # settled, so it must never consume an invoice — otherwise a refund of
+    # the same amount would silently satisfy the charge it reversed.
+    if txn.is_credit:
+        return None, None
     candidates: list[tuple[str, Invoice]] = []
     desc_upper = txn.description.upper()
     mapping = resolve_manual_mapping(txn.description, txn.amount, config)

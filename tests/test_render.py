@@ -544,3 +544,47 @@ def test_open_alert_count_excludes_accepted(tmp_path: Path) -> None:
     assert '<div class="big" id="kpi-alerts">1</div>' in html
     assert "2 accepted" in html
 
+
+def test_credit_serializes_as_a_negative_amount() -> None:
+    from home_expenses.models import Transaction
+
+    refund = Transaction(
+        date=date(2026, 5, 18),
+        description="ENERGY REFUND",
+        amount=Decimal("11.11"),
+        is_credit=True,
+    )
+    charge = make_transaction(date=date(2026, 5, 17), amount=Decimal("20.00"))
+    model = build_report_model(
+        items=[make_item(transaction=refund), make_item(transaction=charge)],
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={},
+    )
+    payload = json.loads(_serialize_model(model))
+    by_desc = {i["description"]: i["amount"] for i in payload["items"]}
+    assert by_desc["ENERGY REFUND"] == "-11.11"
+    assert by_desc["TEST EXPENSE"] == "20.00"
+
+
+def test_credit_shows_negative_in_the_rendered_table(tmp_path: Path) -> None:
+    from home_expenses.models import Transaction
+
+    refund = Transaction(
+        date=date(2026, 5, 18),
+        description="ENERGY REFUND",
+        amount=Decimal("11.11"),
+        is_credit=True,
+    )
+    model = build_report_model(
+        items=[make_item(transaction=refund)],
+        alerts=[],
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={},
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)
+    assert "-11.11" in out.read_text(encoding="utf-8")
+

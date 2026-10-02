@@ -80,7 +80,14 @@ def parse_bank_statement(path: Path) -> BankStatementFile:
         except BankStatementParseError as e:
             raise BankStatementParseError(f"{path}:{row_num}: {e}") from e
         description = row[idx_desc].strip()
-        transactions.append(Transaction(date=txn_date, description=description, amount=abs(amount)))
+        transactions.append(
+            Transaction(
+                date=txn_date,
+                description=description,
+                amount=abs(amount),
+                is_credit=amount > 0,
+            )
+        )
 
     if not transactions:
         raise BankStatementParseError(f"{path}: no rows found")

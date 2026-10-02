@@ -111,7 +111,9 @@ def check_recurrence(
             count = sum(
                 1
                 for it in items
-                if it.category == name
+                # A refund is not a payment, so it cannot cover a period.
+                if not it.transaction.is_credit
+                and it.category == name
                 and assigned_period(it.transaction.date, cat.recurrence, cat.period_edge_days).label
                 == period.label
             )

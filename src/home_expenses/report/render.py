@@ -11,7 +11,7 @@ from pathlib import Path
 import plotly  # type: ignore[import-untyped]
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from home_expenses.models import Item, ReportModel
+from home_expenses.models import Item, ReportModel, Transaction
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -100,6 +100,17 @@ def _item_sort_key(item: Item) -> tuple[date, date, date]:
     return (item.transaction.date, inv_date, period_start)
 
 
+def _signed_amount(txn: Transaction) -> Decimal:
+    """Amount as it should read in the report: negative for credits.
+
+    `Transaction.amount` is a sign-free magnitude so the matcher can compare
+    amounts directly. The report wants the real direction, and the in-page JS
+    simply sums `amount`, so emitting a negative here makes every total,
+    chart and KPI subtract refunds without any JS change.
+    """
+    return -txn.amount if txn.is_credit else txn.amount
+
+
 def _serialize_model(model: ReportModel) -> str:
     """Serialize the model into a JSON blob for in-page JS to consume.
 
@@ -125,7 +136,7 @@ def _serialize_model(model: ReportModel) -> str:
             {
                 "date": it.transaction.date.isoformat(),
                 "description": it.transaction.description,
-                "amount": str(it.transaction.amount),
+                "amount": str(_signed_amount(it.transaction)),
                 "category": it.category,
                 "display_recurrence": it.display_recurrence,
                 "display_period_contains_payment": it.display_period_contains_payment,
