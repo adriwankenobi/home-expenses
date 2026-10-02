@@ -93,3 +93,40 @@ def test_cache_clear_command(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["cache", "clear", "--config", str(cfg)])
     assert result.exit_code == 0
     assert not (cache_dir / "pdf-extractions.json").exists()
+
+
+def _with_accepted_alerts(cfg: Path, rules: list[dict[str, str]]) -> None:
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["accepted_alerts"] = rules
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_accepted_alert_renders_green_end_to_end(tmp_path: Path) -> None:
+    cfg, output = _make_project(tmp_path)
+    _with_accepted_alerts(
+        cfg,
+        [
+            {
+                "kind": "expense_missing_invoice",
+                "category": "electricity",
+                "note": "supplier has not issued it yet",
+            }
+        ],
+    )
+    result = CliRunner().invoke(
+        cli, ["report", "--config", str(cfg), "--output", str(output), "--no-open"]
+    )
+    assert result.exit_code == 0, result.output
+    html = output.read_text(encoding="utf-8")
+    assert 'class="alert accepted"' in html
+    assert "supplier has not issued it yet" in html
+
+
+def test_stale_acceptance_rule_is_reported_end_to_end(tmp_path: Path) -> None:
+    cfg, output = _make_project(tmp_path)
+    _with_accepted_alerts(cfg, [{"kind": "orphan_invoice", "category": "no such category"}])
+    result = CliRunner().invoke(
+        cli, ["report", "--config", str(cfg), "--output", str(output), "--no-open"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "unused_alert_acceptance" in output.read_text(encoding="utf-8")

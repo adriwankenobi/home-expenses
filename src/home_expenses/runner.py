@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from home_expenses.acceptance import apply_acceptances
 from home_expenses.cache import ExtractionCache, file_sha256
 from home_expenses.config import Config
 from home_expenses.matcher import match
@@ -57,7 +58,9 @@ def run_report(config: Config, output_path: Path, today: date) -> RunSummary:
         else []
     )
 
-    all_alerts = tuple(result.alerts) + tuple(recurrence_alerts)
+    all_alerts = apply_acceptances(
+        tuple(result.alerts) + tuple(recurrence_alerts), config.accepted_alerts
+    )
     # Hide pattern-matched payments whose category expects an invoice but
     # doesn't have one. They surface in the alerts banner as
     # EXPENSE_MISSING_INVOICE; including them in charts/items would

@@ -94,6 +94,19 @@
       "patterns": ["MIXED EXAMPLE"]
     }
   },
+  "accepted_alerts": [
+    {
+      "kind": "recurring_missed",
+      "category": "monthly",
+      "note": "accepts every missed period for this category"
+    },
+    {
+      "kind": "recurring_missed",
+      "category": "quarterly",
+      "period": "2024-Q4",
+      "note": "accepts only this one period"
+    }
+  ],
   "manual_mappings": {
     "UNIQUE ANNUAL CHARGE": {
       "category": "sharedQuarterly1",

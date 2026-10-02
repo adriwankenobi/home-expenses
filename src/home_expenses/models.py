@@ -75,6 +75,7 @@ class AlertKind(StrEnum):
     AMBIGUOUS_SPLIT_BUCKET = "ambiguous_split_bucket"
     SPLIT_AMOUNT_TIE = "split_amount_tie"
     UNUSED_MANUAL_MAPPING = "unused_manual_mapping"
+    UNUSED_ALERT_ACCEPTANCE = "unused_alert_acceptance"
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,11 @@ class Alert:
     kind: AlertKind
     message: str
     payload: dict[str, Any] = field(default_factory=dict)
+    # Set by `apply_acceptances` when an accepted_alerts rule matched this
+    # alert: the user has seen it and signed it off. Accepted alerts still
+    # render, but in green, and do not count towards "open alerts".
+    accepted: bool = False
+    note: str | None = None
 
 
 @dataclass(frozen=True)

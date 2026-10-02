@@ -12,6 +12,7 @@ from home_expenses.config import (
     ConfigError,
     load_config,
 )
+from home_expenses.models import AlertKind
 
 
 def _write_config(tmp_path: Path, payload: dict[str, Any]) -> Path:
@@ -855,3 +856,68 @@ def test_resolve_manual_mapping_fallback_catches_non_match(tmp_path: Path) -> No
 
     m = resolve_manual_mapping("SHARED DESC", _Decimal("999.00"), cfg)
     assert m is not None and m.amount is None
+
+
+def test_accepted_alerts_defaults_to_empty(tmp_path: Path) -> None:
+    cfg = load_config(_write_config(tmp_path, _valid_payload(tmp_path)))
+    assert cfg.accepted_alerts == ()
+
+
+def test_accepted_alerts_parsed(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["accepted_alerts"] = [
+        {
+            "kind": "recurring_missed",
+            "category": "electricity",
+            "period": "2026-01",
+            "note": "supplier paused billing",
+        }
+    ]
+    cfg = load_config(_write_config(tmp_path, payload))
+    assert len(cfg.accepted_alerts) == 1
+    rule = cfg.accepted_alerts[0]
+    assert rule.kind is AlertKind.RECURRING_MISSED
+    assert rule.match == {"category": "electricity", "period": "2026-01"}
+    assert rule.note == "supplier paused billing"
+
+
+def test_accepted_alerts_note_is_not_a_match_field(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["accepted_alerts"] = [{"kind": "orphan_invoice", "note": "known"}]
+    cfg = load_config(_write_config(tmp_path, payload))
+    assert cfg.accepted_alerts[0].match == {}
+
+
+def test_accepted_alerts_values_coerced_to_strings(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["accepted_alerts"] = [{"kind": "orphan_invoice", "amount": 30.0}]
+    cfg = load_config(_write_config(tmp_path, payload))
+    assert cfg.accepted_alerts[0].match == {"amount": "30.0"}
+
+
+def test_accepted_alerts_unknown_kind_raises(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["accepted_alerts"] = [{"kind": "not_a_real_kind"}]
+    with pytest.raises(ConfigError, match="unknown alert kind"):
+        load_config(_write_config(tmp_path, payload))
+
+
+def test_accepted_alerts_missing_kind_raises(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["accepted_alerts"] = [{"category": "electricity"}]
+    with pytest.raises(ConfigError, match="missing 'kind'"):
+        load_config(_write_config(tmp_path, payload))
+
+
+def test_accepted_alerts_must_be_a_list(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["accepted_alerts"] = {"kind": "orphan_invoice"}
+    with pytest.raises(ConfigError, match="accepted_alerts must be a JSON list"):
+        load_config(_write_config(tmp_path, payload))
+
+
+def test_accepted_alerts_entry_must_be_an_object(tmp_path: Path) -> None:
+    payload = _valid_payload(tmp_path)
+    payload["accepted_alerts"] = ["recurring_missed"]
+    with pytest.raises(ConfigError, match="accepted_alerts\\[0\\]"):
+        load_config(_write_config(tmp_path, payload))

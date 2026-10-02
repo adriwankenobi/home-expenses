@@ -85,6 +85,31 @@ There is no JS test harness in this repo; the template logic is verified by hand
 - `AMBIGUOUS_SPLIT_BUCKET` — split group's per-period bucket size mismatch.
 - `SPLIT_AMOUNT_TIE` — rank-based split group has multiple transactions with the same amount in one period.
 - `UNUSED_MANUAL_MAPPING` — an amount-specific manual_mapping entry that didn't route any transaction (routed = produced an Item with `from_manual_mapping=True`). Entries whose `(description, amount)` coincides with an invoice-matched transaction are still flagged because the invoice match would have routed it without the mapping.
+- `UNUSED_ALERT_ACCEPTANCE` — an `accepted_alerts` rule that matched no alert in this run. See *Accepting alerts* below.
+
+## Accepting alerts
+
+`Config.accepted_alerts: tuple[AcceptedAlertRule, ...]` holds alerts the user has
+signed off. An accepted alert still renders (green instead of red, with its
+optional `note`) but is excluded from the "open alerts" count.
+
+```json
+"accepted_alerts": [
+  { "kind": "recurring_missed", "category": "Cuota Bancaria", "note": "bank waived it" },
+  { "kind": "recurring_missed", "category": "Comunidad", "period": "2024-11" }
+]
+```
+
+`kind` is required and validated against `AlertKind` at load time. `note` is free
+text. **Every other key is matched against the alert's `payload`, compared as
+strings; a key absent from the rule matches any value.** So the first rule above
+accepts every `recurring_missed` for that category, the second only that period.
+
+`apply_acceptances(alerts, rules)` in `acceptance.py` is a pure function called
+from `runner.run_report` once `all_alerts` is assembled. The first matching rule
+wins. Rules that match nothing emit `UNUSED_ALERT_ACCEPTANCE`, so a rule left
+behind after its underlying problem is fixed doesn't silently keep greening
+whatever it matches next.
 
 To add a new kind: extend the `AlertKind` enum, emit `Alert(kind=..., message=..., payload=...)` from the matcher, and ensure the report template's alerts panel handles it (today it shows them all uniformly).
 

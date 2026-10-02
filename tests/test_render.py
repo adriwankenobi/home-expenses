@@ -496,3 +496,51 @@ def test_period_edge_days_renders_in_data_block(tmp_path: Path) -> None:
     render_report(model, out)
     html = out.read_text(encoding="utf-8")
     assert '"period_edge_days":2' in html or '"period_edge_days": 2' in html
+
+
+def _alerts_model(alerts: list[Alert]) -> object:
+    return build_report_model(
+        items=[make_item(transaction=make_transaction(date=date(2026, 5, 18)))],
+        alerts=alerts,
+        currency="EUR",
+        generated_at=date(2026, 5, 19),
+        categories_by_name={},
+    )
+
+
+def test_accepted_alert_renders_with_accepted_class(tmp_path: Path) -> None:
+    model = _alerts_model(
+        [
+            Alert(kind=AlertKind.RECURRING_MISSED, message="open one"),
+            Alert(
+                kind=AlertKind.RECURRING_MISSED,
+                message="signed off",
+                accepted=True,
+                note="bank waived the fee",
+            ),
+        ]
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)  # type: ignore[arg-type]
+    html = out.read_text(encoding="utf-8")
+    assert 'class="alert accepted"' in html
+    assert 'class="alert"' in html
+    assert "bank waived the fee" in html
+    # The green styling must actually be defined, not just referenced.
+    assert ".alert.accepted" in html
+
+
+def test_open_alert_count_excludes_accepted(tmp_path: Path) -> None:
+    model = _alerts_model(
+        [
+            Alert(kind=AlertKind.RECURRING_MISSED, message="open one"),
+            Alert(kind=AlertKind.RECURRING_MISSED, message="done", accepted=True),
+            Alert(kind=AlertKind.ORPHAN_INVOICE, message="also done", accepted=True),
+        ]
+    )
+    out = tmp_path / "report.html"
+    render_report(model, out)  # type: ignore[arg-type]
+    html = out.read_text(encoding="utf-8")
+    assert '<div class="big" id="kpi-alerts">1</div>' in html
+    assert "2 accepted" in html
+

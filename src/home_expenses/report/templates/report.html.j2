@@ -12,6 +12,8 @@
   .year-tab.active { background: #094771; border-color: #007acc; color: #fff; }
   .section { margin: 24px 0; padding: 16px; background: #1f1f1f; border-radius: 8px; border: 1px solid #333; }
   .alert { padding: 8px 12px; background: #3a1e1e; border-left: 4px solid #f48771; margin: 6px 0; border-radius: 4px; }
+  .alert.accepted { background: #1e3a24; border-left-color: #7fd18b; }
+  .alert-note { margin-top: 4px; font-size: 0.9em; opacity: 0.8; }
   .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
   .kpi { background: #2d2d2d; padding: 16px; border-radius: 6px; text-align: center; }
   /* General KPI cards use a neutral white so the per-category cards' colored
@@ -87,8 +89,9 @@
   <h2>Alerts</h2>
   {% if model.alerts %}
     {% for a in model.alerts %}
-      <div class="alert" data-kind="{{ a.kind.value }}">
+      <div class="alert{% if a.accepted %} accepted{% endif %}" data-kind="{{ a.kind.value }}" data-accepted="{{ 'true' if a.accepted else 'false' }}">
         <strong>{{ a.kind.value }}</strong> — {{ a.message }}
+        {% if a.note %}<div class="alert-note">{{ a.note }}</div>{% endif %}
       </div>
     {% endfor %}
   {% else %}
@@ -102,7 +105,7 @@
     <div class="kpi"><div class="big" id="kpi-total">—</div><div class="label">Total</div></div>
     <div class="kpi"><div class="big" id="kpi-txns">—</div><div class="label">Transactions</div></div>
     <div class="kpi"><div class="big" id="kpi-cats">—</div><div class="label">Categories</div></div>
-    <div class="kpi"><div class="big" id="kpi-alerts">{{ model.alerts | length }}</div><div class="label">Open alerts</div></div>
+    <div class="kpi"><div class="big" id="kpi-alerts">{{ model.alerts | rejectattr('accepted') | list | length }}</div><div class="label">Open alerts{% set n_acc = model.alerts | selectattr('accepted') | list | length %}{% if n_acc %} &middot; {{ n_acc }} accepted{% endif %}</div></div>
   </div>
   <div class="cat-grid" id="cat-grid"></div>
 </div>

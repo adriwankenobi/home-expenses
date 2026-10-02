@@ -10,6 +10,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
+from home_expenses.models import AlertKind
+
 Recurrence = Literal["monthly", "bimonthly", "quarterly", "yearly", "none"]
 _VALID_RECURRENCES: frozenset[str] = frozenset(
     ("monthly", "bimonthly", "quarterly", "yearly", "none")
@@ -157,6 +159,20 @@ class ManualMapping:
 
 
 @dataclass(frozen=True)
+class AcceptedAlertRule:
+    """One `accepted_alerts` entry: an alert the user has signed off.
+
+    `match` holds payload keys to compare (as strings) against an alert's
+    payload. A key absent from `match` matches any value, so a rule naming
+    only `category` accepts every alert of that kind in that category.
+    """
+
+    kind: AlertKind
+    match: dict[str, str] = field(default_factory=dict)
+    note: str | None = None
+
+
+@dataclass(frozen=True)
 class BankStatementsConfig:
     dir: Path
     glob: str
@@ -171,6 +187,7 @@ class Config:
     categories: dict[str, Category] = field(default_factory=dict)
     manual_mappings: dict[str, tuple[ManualMapping, ...]] = field(default_factory=dict)
     split_groups: tuple[SplitGroup, ...] = ()
+    accepted_alerts: tuple[AcceptedAlertRule, ...] = ()
 
 
 def load_config(path: Path) -> Config:
@@ -420,6 +437,8 @@ def load_config(path: Path) -> Config:
 
         manual_mappings[desc] = tuple(parsed_entries)
 
+    accepted_alerts = _parse_accepted_alerts(raw.get("accepted_alerts"), path)
+
     return Config(
         currency=raw["currency"],
         bank_statements=BankStatementsConfig(dir=bs_dir, glob=bs_raw["glob"]),
@@ -428,7 +447,45 @@ def load_config(path: Path) -> Config:
         categories=categories,
         manual_mappings=manual_mappings,
         split_groups=tuple(split_groups),
+        accepted_alerts=accepted_alerts,
     )
+
+
+_VALID_ALERT_KINDS = {k.value for k in AlertKind}
+
+
+def _parse_accepted_alerts(raw: Any, path: Path) -> tuple[AcceptedAlertRule, ...]:
+    """Parse the optional top-level `accepted_alerts` list.
+
+    Each entry needs a `kind`; `note` is free text; every other key becomes
+    a payload field to match on. Keys absent from an entry match any value.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError(f"{path}: accepted_alerts must be a JSON list")
+    rules: list[AcceptedAlertRule] = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{path}: accepted_alerts[{i}] must be a JSON object")
+        if "kind" not in entry:
+            raise ConfigError(f"{path}: accepted_alerts[{i}] missing 'kind'")
+        kind_raw = entry["kind"]
+        if kind_raw not in _VALID_ALERT_KINDS:
+            raise ConfigError(
+                f"{path}: accepted_alerts[{i}] unknown alert kind '{kind_raw}'; "
+                f"expected one of {sorted(_VALID_ALERT_KINDS)}"
+            )
+        note = entry.get("note")
+        match = {k: str(v) for k, v in entry.items() if k not in ("kind", "note")}
+        rules.append(
+            AcceptedAlertRule(
+                kind=AlertKind(kind_raw),
+                match=match,
+                note=str(note) if note is not None else None,
+            )
+        )
+    return tuple(rules)
 
 
 def resolve_manual_mapping(
